@@ -3,6 +3,7 @@
 
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use windows::Devices::Radios::{Radio, RadioKind, RadioState};
 use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
@@ -10,6 +11,7 @@ use windows::Graphics::Imaging::*;
 use windows::Media::Control::*;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 pub const WM_APP_MEDIA: u32 = WM_APP + 1;
@@ -29,6 +31,11 @@ pub struct Media {
     pub app: String,
     pub playing: bool,
     pub art: Option<Arc<Art>>,
+    /// Позиция (с) на момент `at`, длина трека (с). dur = 0 — плеер не сообщает время.
+    pub pos: f64,
+    pub dur: f64,
+    pub at: Option<Instant>,
+    pub can_seek: bool,
 }
 
 pub static MEDIA: Mutex<Media> = Mutex::new(Media {
@@ -38,7 +45,28 @@ pub static MEDIA: Mutex<Media> = Mutex::new(Media {
     app: String::new(),
     playing: false,
     art: None,
+    pos: 0.0,
+    dur: 0.0,
+    at: None,
+    can_seek: false,
 });
+
+impl Media {
+    /// (текущая позиция, длина) в секундах. Плееры шлют позицию редко, поэтому досчитываем сами.
+    pub fn progress(&self) -> Option<(f64, f64)> {
+        // Меньше секунды — плеер явно не сообщает настоящую длину.
+        if !self.has || self.dur < 1.0 {
+            return None;
+        }
+        let mut cur = self.pos;
+        if self.playing {
+            if let Some(at) = self.at {
+                cur += at.elapsed().as_secs_f64();
+            }
+        }
+        Some((cur.clamp(0.0, self.dur), self.dur))
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 pub struct Radios {
@@ -57,6 +85,9 @@ pub enum Kind {
 #[derive(PartialEq)]
 pub enum Job {
     Refresh,
+    Timeline,
+    /// Перемотка на долю трека 0..1.
+    Seek(f64),
     PlayPause,
     Next,
     Prev,
@@ -100,13 +131,48 @@ struct Sub {
     id: String,
     props: EventRegistrationToken,
     playback: EventRegistrationToken,
+    timeline: Option<EventRegistrationToken>,
 }
 
 impl Drop for Sub {
     fn drop(&mut self) {
         let _ = self.session.RemoveMediaPropertiesChanged(self.props);
         let _ = self.session.RemovePlaybackInfoChanged(self.playback);
+        if let Some(t) = self.timeline {
+            let _ = self.session.RemoveTimelinePropertiesChanged(t);
+        }
     }
+}
+
+/// Перечитать время трека и возможность перемотки.
+fn read_timeline(s: &GlobalSystemMediaTransportControlsSession) {
+    let tl = s.GetTimelineProperties().ok();
+    let ticks = |f: fn(&GlobalSystemMediaTransportControlsSessionTimelineProperties) -> windows::core::Result<windows::Foundation::TimeSpan>| {
+        tl.as_ref().and_then(|t| f(t).ok()).map(|v| v.Duration).unwrap_or(0)
+    };
+    let (start, end, pos) = (ticks(|t| t.StartTime()), ticks(|t| t.EndTime()), ticks(|t| t.Position()));
+    // Позиция снята в LastUpdatedTime: переводим это в Instant, чтобы досчитывать от него.
+    let updated = tl.as_ref().and_then(|t| t.LastUpdatedTime().ok()).map(|d| d.UniversalTime).unwrap_or(0);
+    let now = unsafe {
+        let ft = GetSystemTimeAsFileTime();
+        ((ft.dwHighDateTime as i64) << 32) | ft.dwLowDateTime as i64
+    };
+    let ago = now - updated;
+    let at = if updated > 0 && (0..864_000_000_000).contains(&ago) {
+        Instant::now().checked_sub(Duration::from_nanos(ago as u64 * 100))
+    } else {
+        Some(Instant::now())
+    };
+    let can_seek = s
+        .GetPlaybackInfo()
+        .and_then(|p| p.Controls())
+        .and_then(|c| c.IsPlaybackPositionEnabled())
+        .unwrap_or(false);
+    let mut m = MEDIA.lock().unwrap();
+    m.dur = (end - start).max(0) as f64 / 1e7;
+    m.pos = (pos - start).max(0) as f64 / 1e7;
+    m.at = at;
+    m.can_seek = can_seek && end > start;
 }
 
 fn worker(rx: mpsc::Receiver<Job>) {
@@ -141,6 +207,31 @@ fn worker(rx: mpsc::Receiver<Job>) {
                         refresh(m, &mut sub, &mut art_key);
                     }
                     notify(WM_APP_MEDIA);
+                }
+                Job::Timeline => {
+                    if let Some(s) = &sub {
+                        read_timeline(&s.session);
+                        notify(WM_APP_MEDIA);
+                    }
+                }
+                Job::Seek(frac) => {
+                    if let Some(s) = &sub {
+                        if let Ok(tl) = s.session.GetTimelineProperties() {
+                            let start = tl.StartTime().map(|t| t.Duration).unwrap_or(0);
+                            let end = tl.EndTime().map(|t| t.Duration).unwrap_or(0);
+                            if end > start {
+                                let to = start + ((end - start) as f64 * frac.clamp(0.0, 1.0)) as i64;
+                                let ok = s.session.TryChangePlaybackPositionAsync(to).and_then(|o| o.get()).unwrap_or(false);
+                                // Плееры сообщают новую позицию с задержкой, поэтому сразу ставим ту, куда перемотали.
+                                if ok {
+                                    let mut m = MEDIA.lock().unwrap();
+                                    m.pos = (to - start) as f64 / 1e7;
+                                    m.at = Some(Instant::now());
+                                }
+                            }
+                        }
+                        notify(WM_APP_MEDIA);
+                    }
                 }
                 Job::PlayPause | Job::Next | Job::Prev => {
                     if let Some(s) = &sub {
@@ -210,8 +301,14 @@ fn refresh(mgr: &GlobalSystemMediaTransportControlsSessionManager, sub: &mut Opt
                 send(Job::Refresh);
                 Ok(())
             }));
+            let timeline = s
+                .TimelinePropertiesChanged(&TypedEventHandler::new(|_, _| {
+                    send(Job::Timeline);
+                    Ok(())
+                }))
+                .ok();
             if let (Ok(props), Ok(playback)) = (props, playback) {
-                *sub = Some(Sub { session: s, id, props, playback });
+                *sub = Some(Sub { session: s, id, props, playback, timeline });
             }
         }
     }
@@ -220,9 +317,11 @@ fn refresh(mgr: &GlobalSystemMediaTransportControlsSessionManager, sub: &mut Opt
         let mut m = MEDIA.lock().unwrap();
         m.has = false;
         m.art = None;
+        m.dur = 0.0;
         art_key.clear();
         return;
     };
+    read_timeline(&s);
     let props = s.TryGetMediaPropertiesAsync().and_then(|o| o.get()).ok();
     let title = props.as_ref().and_then(|p| p.Title().ok()).map(|h| h.to_string()).unwrap_or_default();
     let artist = props.as_ref().and_then(|p| p.Artist().ok()).map(|h| h.to_string()).unwrap_or_default();

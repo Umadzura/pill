@@ -3,9 +3,11 @@
 //! Pill: лёгкая панель сверху экрана. Чистый Win32 + GDI, без браузерного движка.
 //! Перерисовка только по событиям (таймер раз в секунду, наведение, клики, события системы).
 
+mod audio;
 mod clip;
 mod launcher;
 mod media;
+mod privacy;
 mod sys;
 mod ui;
 
@@ -35,12 +37,18 @@ const TOP_MARGIN: i32 = 6;
 const WM_MOUSELEAVE_MSG: u32 = 0x02A3;
 const WM_CLIPBOARDUPDATE_MSG: u32 = 0x031D;
 const WM_APP_TRAY: u32 = WM_APP + 3;
+const WM_APP_BAR: u32 = WM_APP + 4;
 
 const TIMER_CLOCK: usize = 1;
 const TIMER_COLLAPSE: usize = 2;
 const TIMER_PASTE: usize = 3;
 const TIMER_CTL: usize = 4;
+const TIMER_FLASH: usize = 5;
+const TIMER_SHOT: usize = 6;
 const COLLAPSE_DELAY_MS: u32 = 350;
+const FLASH_VOLUME_MS: u32 = 1500;
+/// Ширина свёрнутой пилюли с полоской громкости.
+pub const LEVEL_W: i32 = 240;
 
 const HOTKEY_CMD: i32 = 1;
 const HOTKEY_CLIP: i32 = 2;
@@ -70,6 +78,7 @@ pub enum Ctl {
     Vpn,
     Dark,
     Mute,
+    Shot,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -88,6 +97,7 @@ pub enum Hit {
     MediaPrev,
     MediaPlay,
     MediaNext,
+    Seek,
     Volume,
     ClipRow(usize),
     ClipPin(usize),
@@ -106,6 +116,14 @@ pub enum CmdRes {
     App(usize),
     Run(String),
     Active(usize),
+}
+
+/// Временная надпись в свёрнутой пилюле (громкость, зарядка, предупреждения).
+pub enum Flash {
+    /// Громкость: уровень 0..1, без звука.
+    Volume(f32, bool),
+    /// Текст; true — предупреждение (другой цвет).
+    Text(String, bool),
 }
 
 pub struct Timer {
@@ -144,6 +162,18 @@ pub struct State {
     size: (i32, i32),
     taskbar_created: u32,
     icon: HICON,
+    /// На нашем мониторе полноэкранное окно (игра, видео): пилюлю прячем.
+    fullscreen: bool,
+    /// Сколько секунд подряд проверка не видит полноэкранного окна (страховка, если Windows не пришлёт «вышли»).
+    fs_miss: u8,
+    pub flash: Option<Flash>,
+    audio: Option<audio::Watch>,
+    /// Последняя известная громкость: флешим только при реальном изменении.
+    last_vol: Option<(f32, bool)>,
+    /// Было ли питание от сети на прошлом тике (None — ещё не знаем или батареи нет).
+    last_ac: Option<bool>,
+    /// Какое предупреждение о заряде уже показали: 0, 20 или 10.
+    batt_warned: u8,
 }
 
 thread_local! {
@@ -205,6 +235,13 @@ fn main() {
                 size: (0, 0),
                 taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
                 icon: sys::make_icon(),
+                fullscreen: false,
+                fs_miss: 0,
+                flash: None,
+                audio: None,
+                last_vol: sys::volume(),
+                last_ac: None,
+                batt_warned: 0,
             })
         });
 
@@ -248,11 +285,15 @@ fn main() {
         }
         let _ = RegisterHotKey(hwnd, HOTKEY_CLIP, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_V.0 as u32);
         tray(hwnd, NIM_ADD);
+        appbar(hwnd, ABM_NEW);
         // Если exe перенесли, а автозапуск включён — обновим путь.
         if sys::autostart() {
             sys::set_autostart(true);
         }
         media::start(hwnd);
+        privacy::start(hwnd);
+        let watch = audio::Watch::start(hwnd);
+        st(|s| s.audio = watch);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -260,7 +301,110 @@ fn main() {
             DispatchMessageW(&msg);
         }
         tray(hwnd, NIM_DELETE);
+        // Отписка от звука до выхода из COM.
+        drop(st(|s| s.audio.take()));
     }
+}
+
+/// Показать временную надпись на ms миллисекунд (новая заменяет старую).
+unsafe fn show_flash(hwnd: HWND, flash: Flash, ms: u32) {
+    st(|s| s.flash = Some(flash));
+    SetTimer(hwnd, TIMER_FLASH, ms, None);
+    layout(hwnd);
+}
+
+/// Что сказать про батарею на этом тике: (текст, предупреждение).
+/// Предупреждаем один раз на 20% и один раз на 10%; сброс после зарядки или выше 25%.
+fn battery_event(prev_ac: Option<bool>, warned: &mut u8, pct: u8, ac: bool) -> Option<(String, bool)> {
+    if ac || pct > 25 {
+        *warned = 0;
+    }
+    if !ac && pct <= 10 && *warned != 10 {
+        *warned = 10;
+        return Some((format!("Батарея {}% — подключи зарядку", pct), true));
+    }
+    if !ac && pct <= 20 && *warned == 0 {
+        *warned = 20;
+        return Some((format!("Батарея {}% — пора на зарядку", pct), true));
+    }
+    match prev_ac {
+        Some(false) if ac => Some((format!("⚡ Заряжается · {}%", pct), false)),
+        Some(true) if !ac => Some((format!("От батареи · {}%", pct), false)),
+        _ => None,
+    }
+}
+
+/// Раз в секунду: зарядку подключили/отключили, заряд упал до порога. На ПК без батареи ничего.
+unsafe fn battery_tick(hwnd: HWND) {
+    let Some((pct, ac)) = ui::battery() else { return };
+    let ev = st(|s| {
+        let prev = s.last_ac.replace(ac);
+        battery_event(prev, &mut s.batt_warned, pct, ac)
+    });
+    if let Some((text, warn)) = ev {
+        if warn {
+            let _ = MessageBeep(MB_ICONEXCLAMATION);
+        }
+        show_flash(hwnd, Flash::Text(text, warn), if warn { 8000 } else { 3000 });
+    }
+}
+
+/// Событие громкости от системы (колбэк в audio.rs).
+unsafe fn on_volume(hwnd: HWND, level: f32, muted: bool) {
+    let (changed, expanded) = st(|s| {
+        let prev = s.last_vol.replace((level, muted));
+        // Драйверы иногда шлют одно и то же по несколько раз.
+        let changed = prev.map(|(l, m)| (l - level).abs() > 0.004 || m != muted).unwrap_or(true);
+        if s.expanded {
+            s.ctl.volume = Some((level, muted));
+        }
+        (changed, s.expanded)
+    });
+    if expanded {
+        // В раскрытой панели громкость и так видна.
+        let _ = InvalidateRect(hwnd, None, false);
+    } else if changed {
+        show_flash(hwnd, Flash::Volume(level, muted), FLASH_VOLUME_MS);
+    }
+}
+
+/// Регистрация «панели приложения» без резерва места: так Explorer шлёт ABN_FULLSCREENAPP,
+/// когда на экране появляется и пропадает полноэкранное окно.
+unsafe fn appbar(hwnd: HWND, msg: u32) {
+    let mut abd = APPBARDATA {
+        cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+        hWnd: hwnd,
+        uCallbackMessage: WM_APP_BAR,
+        ..Default::default()
+    };
+    SHAppBarMessage(msg, &mut abd);
+}
+
+/// Активное окно закрывает весь монитор пилюли (игра, видео на весь экран)?
+/// Рабочий стол (Progman/WorkerW) тоже «на весь экран», его не считаем.
+unsafe fn fullscreen_fg(hwnd: HWND) -> bool {
+    let fg = GetForegroundWindow();
+    if fg.0.is_null() || fg == hwnd {
+        return false;
+    }
+    let mut cls = [0u16; 64];
+    let n = GetClassNameW(fg, &mut cls).max(0) as usize;
+    let cls = String::from_utf16_lossy(&cls[..n]);
+    if matches!(cls.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd") {
+        return false;
+    }
+    let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+    if MonitorFromWindow(fg, MONITOR_DEFAULTTONULL) != mon {
+        return false;
+    }
+    let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    if !GetMonitorInfoW(mon, &mut mi).as_bool() {
+        return false;
+    }
+    let mut rc = RECT::default();
+    let _ = GetWindowRect(fg, &mut rc);
+    let m = mi.rcMonitor;
+    rc.left <= m.left && rc.top <= m.top && rc.right >= m.right && rc.bottom >= m.bottom
 }
 
 unsafe fn tray(hwnd: HWND, op: NOTIFY_ICON_MESSAGE) {
@@ -304,9 +448,15 @@ pub fn collapsed_text(s: &State) -> String {
     if let Some(a) = &s.alarm {
         return format!("⏰  {}", a);
     }
+    match &s.flash {
+        Some(Flash::Text(t, _)) => return t.clone(),
+        // Полоска рисуется отдельно (ui::level_flash), ширина фиксированная.
+        Some(Flash::Volume(..)) => return String::new(),
+        None => {}
+    }
     let mut parts = Vec::new();
-    let time = ui::time_text();
-    parts.push(if media::playing() { format!("♪  {}", time) } else { time });
+    // Значок музыки рисуется отдельно (ui::lead_width), тут только текст.
+    parts.push(ui::time_text());
     if let Some(t) = s.timers.iter().min_by_key(|t| t.end) {
         let left = t.end.saturating_duration_since(Instant::now()).as_secs();
         parts.push(format!("⏱ {}", launcher::fmt_dur(left)));
@@ -319,11 +469,13 @@ pub fn collapsed_text(s: &State) -> String {
 
 /// Ставит окно по центру верхнего края основного монитора и задаёт скруглённую форму.
 unsafe fn layout(hwnd: HWND) {
-    let (expanded, dpi, text) = st(|s| (s.expanded, s.dpi, collapsed_text(s)));
+    let (expanded, dpi, text, level) = st(|s| (s.expanded, s.dpi, collapsed_text(s), ui::shows_level(s)));
     let (w, h) = if expanded {
         (scale(EXPANDED_W, dpi), scale(EXPANDED_H, dpi))
+    } else if level {
+        (scale(LEVEL_W, dpi), scale(COLLAPSED_H, dpi))
     } else {
-        let tw = ui::measure(hwnd, dpi, &text);
+        let tw = ui::measure(hwnd, dpi, &text) + st(|s| ui::lead_width(s, dpi));
         (tw.max(scale(COLLAPSED_MIN_W - 36, dpi)) + scale(36, dpi), scale(COLLAPSED_H, dpi))
     };
     let changed = st(|s| {
@@ -335,12 +487,31 @@ unsafe fn layout(hwnd: HWND) {
     if changed {
         let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
         let y = scale(TOP_MARGIN, dpi);
-        let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
         let radius = if expanded { scale(28, dpi) } else { h };
         let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius, radius);
         SetWindowRgn(hwnd, rgn, true);
     }
+    // В полноэкранном режиме прячемся. Открыли хоткеем — показываемся, пока панель раскрыта.
+    let want = st(|s| !s.fullscreen || s.expanded);
+    let visible = IsWindowVisible(hwnd).as_bool();
+    if want && !visible {
+        // Заодно снова встаём поверх: полноэкранные программы любят забирать TOPMOST.
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    } else if !want && visible {
+        let _ = ShowWindow(hwnd, SW_HIDE);
+    }
     let _ = InvalidateRect(hwnd, None, false);
+}
+
+unsafe fn set_fullscreen(hwnd: HWND, value: bool) {
+    let changed = st(|s| {
+        s.fs_miss = 0;
+        std::mem::replace(&mut s.fullscreen, value) != value
+    });
+    if changed {
+        layout(hwnd);
+    }
 }
 
 fn refresh_ctl() {
@@ -634,6 +805,10 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
         Hit::MediaPrev => media::send(media::Job::Prev),
         Hit::MediaPlay => media::send(media::Job::PlayPause),
         Hit::MediaNext => media::send(media::Job::Next),
+        Hit::Seek => {
+            let w = (rect.right - rect.left).max(1);
+            media::send(media::Job::Seek((x - rect.left) as f64 / w as f64));
+        }
         Hit::Volume => {
             let w = (rect.right - rect.left).max(1);
             sys::set_volume((x - rect.left) as f32 / w as f32);
@@ -676,6 +851,12 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
                     sys::set_dark_theme(!dark);
                 }
                 Ctl::Mute => sys::toggle_mute(),
+                Ctl::Shot => {
+                    // Сначала сворачиваемся, чтобы панель не попала в кадр, потом открываем выделение области.
+                    close_panel(hwnd, true);
+                    SetTimer(hwnd, TIMER_SHOT, 250, None);
+                    return;
+                }
             }
             refresh_ctl();
         }
@@ -755,13 +936,28 @@ unsafe fn on_tick(hwnd: HWND) {
     if beep {
         let _ = MessageBeep(MB_ICONEXCLAMATION);
     }
+    // Страховка: если «вышли из полноэкранного» не пришло, через 2 с без такого окна показываемся.
+    battery_tick(hwnd);
+    // Пока панель открыта хоткеем поверх игры, активна она сама, поэтому не проверяем.
+    if st(|s| s.fullscreen && !s.expanded) {
+        let still = fullscreen_fg(hwnd);
+        let gone = st(|s| {
+            s.fs_miss = if still { 0 } else { s.fs_miss + 1 };
+            s.fs_miss >= 2
+        });
+        if gone {
+            set_fullscreen(hwnd, false);
+        }
+    }
     // Перерисовываем только если что-то видимое поменялось.
     let (changed, expanded, live) = st(|s| {
         (collapsed_text(s) != s.last_collapsed, s.expanded, !s.timers.is_empty() || s.confirm.is_some())
     });
+    // Пока играет музыка, раз в секунду двигаются прогресс и эквалайзер.
+    let music = media::playing();
     if changed {
         layout(hwnd);
-    } else if expanded && live {
+    } else if (expanded && live) || music {
         let _ = InvalidateRect(hwnd, None, false);
     }
 }
@@ -882,8 +1078,40 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             layout(hwnd);
             LRESULT(0)
         }
+        audio::WM_APP_VOLUME => {
+            on_volume(hwnd, wparam.0 as f32 / 1000.0, lparam.0 != 0);
+            LRESULT(0)
+        }
+        audio::WM_APP_AUDIODEV => {
+            // Переключились на другое устройство: переподписываемся молча, без вспышки.
+            let mut w = st(|s| s.audio.take());
+            if let Some(w) = w.as_mut() {
+                w.rebind();
+            }
+            let vol = sys::volume();
+            st(|s| {
+                s.audio = w;
+                s.last_vol = vol;
+                s.ctl.volume = vol;
+            });
+            let _ = InvalidateRect(hwnd, None, false);
+            LRESULT(0)
+        }
+        privacy::WM_APP_PRIVACY => {
+            // Точки микрофона/камеры меняют ширину пилюли.
+            layout(hwnd);
+            LRESULT(0)
+        }
         media::WM_APP_RADIO => {
             let _ = InvalidateRect(hwnd, None, false);
+            LRESULT(0)
+        }
+        WM_APP_BAR => {
+            if wparam.0 as u32 == ABN_FULLSCREENAPP {
+                // lparam != 0 — полноэкранное окно появилось (на каком-то мониторе), 0 — пропало.
+                let on = lparam.0 != 0 && fullscreen_fg(hwnd);
+                set_fullscreen(hwnd, on);
+            }
             LRESULT(0)
         }
         WM_APP_TRAY => {
@@ -907,6 +1135,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if st(|s| std::mem::take(&mut s.pending_paste)) {
                         sys::send_ctrl_v();
                     }
+                }
+                TIMER_SHOT => {
+                    let _ = KillTimer(hwnd, TIMER_SHOT);
+                    sys::open("ms-screenclip:", None);
+                }
+                TIMER_FLASH => {
+                    let _ = KillTimer(hwnd, TIMER_FLASH);
+                    st(|s| s.flash = None);
+                    layout(hwnd);
                 }
                 TIMER_CTL => {
                     let _ = KillTimer(hwnd, TIMER_CTL);
@@ -940,6 +1177,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_DESTROY => {
+            appbar(hwnd, ABM_REMOVE);
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -947,9 +1185,43 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if msg != 0 && msg == st(|s| s.taskbar_created) {
                 // Explorer перезапустился — вернуть иконку в трей.
                 tray(hwnd, NIM_ADD);
+                appbar(hwnd, ABM_NEW);
                 return LRESULT(0);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn battery_events() {
+        let mut w = 0;
+        // Подключили и отключили зарядку.
+        assert_eq!(battery_event(Some(false), &mut w, 64, true).unwrap(), ("⚡ Заряжается · 64%".into(), false));
+        assert_eq!(battery_event(Some(true), &mut w, 64, false).unwrap(), ("От батареи · 64%".into(), false));
+        assert!(battery_event(Some(false), &mut w, 63, false).is_none());
+        // 20% — одно предупреждение, дрожание 21/20 не повторяет его.
+        assert!(battery_event(Some(false), &mut w, 21, false).is_none());
+        assert!(battery_event(Some(false), &mut w, 20, false).unwrap().1);
+        assert!(battery_event(Some(false), &mut w, 21, false).is_none());
+        assert!(battery_event(Some(false), &mut w, 20, false).is_none());
+        // 10% — второе предупреждение, тоже один раз.
+        assert!(battery_event(Some(false), &mut w, 10, false).unwrap().1);
+        assert!(battery_event(Some(false), &mut w, 9, false).is_none());
+        // Зарядили — счёт сбрасывается, следующая разрядка снова предупредит.
+        assert!(!battery_event(Some(false), &mut w, 9, true).unwrap().1);
+        assert_eq!(w, 0);
+        // Выдернули зарядку на 15%: сразу предупреждение, а не «от батареи».
+        assert!(battery_event(Some(true), &mut w, 15, false).unwrap().1);
+        // Запуск уже на 8% от батареи: предупреждаем сразу.
+        let mut w = 0;
+        assert!(battery_event(None, &mut w, 8, false).unwrap().0.contains("8%"));
+        // Первый тик на зарядке: молчим.
+        let mut w = 0;
+        assert!(battery_event(None, &mut w, 50, true).is_none());
     }
 }

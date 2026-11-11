@@ -17,6 +17,8 @@ const HOVER: COLORREF = rgb(42, 42, 52);
 const ON: COLORREF = rgb(56, 78, 160);
 const OFF_DIM: COLORREF = rgb(24, 24, 28);
 const DANGER: COLORREF = rgb(150, 50, 55);
+const WARN: COLORREF = rgb(255, 150, 70);
+const TRACK: COLORREF = rgb(52, 52, 60);
 
 // Значки шрифта Segoe MDL2 Assets.
 const I_PREV: &str = "\u{E892}";
@@ -42,6 +44,9 @@ const I_CALC: &str = "\u{E8EF}";
 const I_APP: &str = "\u{E71D}";
 const I_RUN: &str = "\u{E756}";
 const I_MUSIC: &str = "\u{E8D6}";
+const I_SHOT: &str = "\u{E8C6}"; // ножницы, как у «Ножниц» Windows
+// Громкость по уровням: 0, 1/3, 2/3, полная.
+const I_VOL_LEVELS: [&str; 4] = ["\u{E992}", "\u{E993}", "\u{E994}", "\u{E995}"];
 
 pub const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
@@ -61,6 +66,11 @@ fn power() -> Option<SYSTEM_POWER_STATUS> {
     unsafe { GetSystemPowerStatus(&mut ps).ok()? };
     // 128 = батареи нет, 255 = неизвестно.
     (ps.BatteryFlag & 128 == 0 && ps.BatteryLifePercent <= 100).then_some(ps)
+}
+
+/// (процент, от сети). None, если батареи нет.
+pub fn battery() -> Option<(u8, bool)> {
+    power().map(|ps| (ps.BatteryLifePercent, ps.ACLineStatus == 1))
 }
 
 /// None, если батареи нет (стационарный ПК).
@@ -149,6 +159,73 @@ pub unsafe fn measure(hwnd: HWND, dpi: u32, text: &str) -> i32 {
     sz.cx
 }
 
+/// Обычный вид свёрнутой пилюли (не тревога и не временная надпись).
+fn plain(s: &State) -> bool {
+    s.alarm.is_none() && s.flash.is_none()
+}
+
+/// (микрофон занят, камера занята)
+fn privacy_dots() -> (bool, bool) {
+    let u = privacy::IN_USE.lock().unwrap();
+    (!u.mic.is_empty(), !u.cam.is_empty())
+}
+
+/// Сколько места слева от текста занимают значки: точки микрофона/камеры и эквалайзер музыки.
+pub fn lead_width(s: &State, dpi: u32) -> i32 {
+    if !plain(s) {
+        return 0;
+    }
+    let (mic, cam) = privacy_dots();
+    let dots = mic as i32 + cam as i32;
+    let mut w = if dots > 0 { dots * (DOT + 4) + 4 } else { 0 };
+    if media::playing() {
+        w += EQ_W + 8;
+    }
+    scale(w, dpi)
+}
+
+const EQ_W: i32 = 13;
+const DOT: i32 = 7;
+const MIC: COLORREF = rgb(255, 150, 70);
+const CAM: COLORREF = rgb(80, 200, 120);
+
+/// Значки слева от текста свёрнутой пилюли.
+unsafe fn draw_lead(p: &Painter, mut x: i32, mid: i32) {
+    let (mic, cam) = privacy_dots();
+    for (on, c) in [(mic, MIC), (cam, CAM)] {
+        if on {
+            let d = p.s(DOT);
+            p.fill(RECT { left: x, top: mid - d / 2, right: x + d, bottom: mid - d / 2 + d }, DOT, c);
+            x += p.s(DOT + 4);
+        }
+    }
+    if mic || cam {
+        x += p.s(4);
+    }
+    if media::playing() {
+        eq_icon(p, x, mid);
+    }
+}
+
+/// Три столбика «эквалайзера». Высоты меняются раз в секунду вместе с перерисовкой часов:
+/// живо, но без отдельного таймера и опроса звука.
+unsafe fn eq_icon(p: &Painter, x: i32, mid: i32) {
+    let t = unsafe { GetLocalTime() };
+    let seed = t.wSecond as usize;
+    const H: [i32; 7] = [5, 9, 12, 7, 11, 6, 10];
+    for i in 0..3 {
+        let h = H[(seed * 3 + i * 2 + seed / 7) % H.len()];
+        let l = x + p.s(i as i32 * 5);
+        let r = RECT { left: l, top: mid + p.s(6 - h), right: l + p.s(3), bottom: mid + p.s(6) };
+        p.fill(r, 2, ACCENT);
+    }
+}
+
+/// Свёрнутая пилюля сейчас показывает полоску уровня (громкость), а не текст.
+pub fn shows_level(s: &State) -> bool {
+    s.alarm.is_none() && matches!(s.flash, Some(Flash::Volume(..)))
+}
+
 /// Сколько строк истории буфера влезает.
 pub fn clip_rows(_dpi: u32) -> usize {
     ((EXPANDED_H - 14 - 94) / 28) as usize
@@ -191,6 +268,15 @@ impl Painter<'_> {
         let mut buf = wide(s);
         let mut r = r;
         DrawTextW(self.hdc, &mut buf, &mut r, flags | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER);
+    }
+    unsafe fn measure(&self, font: HFONT, s: &str) -> i32 {
+        if s.is_empty() {
+            return 0;
+        }
+        SelectObject(self.hdc, font);
+        let mut sz = SIZE::default();
+        let _ = GetTextExtentPoint32W(self.hdc, &wide(s), &mut sz);
+        sz.cx
     }
     fn hit(&mut self, r: RECT, h: Hit) {
         self.hits.push((r, h));
@@ -274,8 +360,30 @@ pub unsafe fn paint(hwnd: HWND) {
         let fonts = Fonts::new(s.dpi);
         let mut p = Painter { hdc: mem, dpi: s.dpi, f: &fonts, hits: Vec::new(), hover: s.hover };
         if !s.expanded {
-            let color = if s.alarm.is_some() { ACCENT } else { FG };
-            p.text(fonts.bold, &collapsed_text(s), rc, color, DT_CENTER);
+            if let (true, Some(Flash::Volume(level, muted))) = (shows_level(s), &s.flash) {
+                level_flash(&mut p, rc, *level, *muted);
+            } else {
+                let color = match (&s.alarm, &s.flash) {
+                    (Some(_), _) => ACCENT,
+                    (None, Some(Flash::Text(_, true))) => WARN,
+                    (None, Some(Flash::Text(_, false))) => ACCENT,
+                    _ => FG,
+                };
+                let text = collapsed_text(s);
+                let lead = lead_width(s, s.dpi);
+                if lead == 0 {
+                    p.text(fonts.bold, &text, rc, color, DT_CENTER);
+                } else {
+                    // Значки + текст одним блоком по центру.
+                    let total = lead + p.measure(fonts.bold, &text);
+                    let x = (rc.right - total) / 2;
+                    draw_lead(&p, x, rc.bottom / 2);
+                    p.text(fonts.bold, &text, RECT { left: x + lead, ..rc }, color, DT_LEFT);
+                }
+                if plain(s) {
+                    collapsed_progress(&p, rc);
+                }
+            }
         } else {
             for (i, (t, name)) in TABS.iter().enumerate() {
                 let r = tab_rect(i, s.dpi);
@@ -315,6 +423,53 @@ pub unsafe fn paint(hwnd: HWND) {
     let _ = DeleteObject(bmp);
     let _ = DeleteDC(mem);
     let _ = EndPaint(hwnd, &ps);
+}
+
+/// Тонкая полоска прогресса трека по низу свёрнутой пилюли (если играет и плеер сообщает время).
+unsafe fn collapsed_progress(p: &Painter, rc: RECT) {
+    let m = media::MEDIA.lock().unwrap();
+    if !m.playing {
+        return;
+    }
+    let Some((cur, dur)) = m.progress() else { return };
+    drop(m);
+    // Отступ на полвысоты: там уже начинается скругление.
+    let inset = rc.bottom / 2;
+    let bar = RECT { left: inset, top: rc.bottom - p.s(4), right: rc.right - inset, bottom: rc.bottom - p.s(2) };
+    p.fill(bar, 0, TRACK);
+    let fill = RECT { right: bar.left + ((bar.right - bar.left) as f64 * cur / dur) as i32, ..bar };
+    p.fill(fill, 0, ACCENT);
+}
+
+/// Время трека «1:23» / «1:02:03».
+fn fmt_time(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
+/// Свёрнутая пилюля с громкостью: значок, полоска, проценты.
+unsafe fn level_flash(p: &mut Painter, rc: RECT, level: f32, muted: bool) {
+    let icon = if muted {
+        I_MUTE
+    } else {
+        I_VOL_LEVELS[((level * 3.0).ceil() as usize).min(3)]
+    };
+    let (l, r) = (rc.left + p.s(16), rc.right - p.s(16));
+    p.text(p.f.icon, icon, RECT { left: l, right: l + p.s(22), ..rc }, FG, DT_LEFT);
+    let pct = if muted { "выкл".to_string() } else { format!("{}%", (level * 100.0).round() as i32) };
+    p.text(p.f.bold, &pct, RECT { left: r - p.s(44), right: r, ..rc }, FG, DT_RIGHT);
+    let mid = (rc.top + rc.bottom) / 2;
+    let bar = RECT { left: l + p.s(30), top: mid - p.s(3), right: r - p.s(52), bottom: mid + p.s(3) };
+    p.fill(bar, 6, TRACK);
+    let mut filled = bar;
+    filled.right = bar.left + ((bar.right - bar.left) as f32 * level.clamp(0.0, 1.0)) as i32;
+    if filled.right - filled.left >= p.s(4) {
+        p.fill(filled, 6, if muted { DIM } else { FG });
+    }
 }
 
 unsafe fn music(p: &mut Painter, s: &State, w: i32, h: i32) {
@@ -377,6 +532,8 @@ unsafe fn music(p: &mut Painter, s: &State, w: i32, h: i32) {
     p.text(p.f.title, title, RECT { left: x, top: p.s(84), right, bottom: p.s(112) }, FG, DT_LEFT | DT_END_ELLIPSIS);
     p.text(p.f.normal, &m.artist, RECT { left: x, top: p.s(112), right, bottom: p.s(134) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
     let playing = m.playing;
+    let progress = m.progress();
+    let can_seek = m.can_seek;
     drop(m);
 
     p.icon_button(p.r(170, 146, 214, 190), I_PREV, Hit::MediaPrev, false);
@@ -385,7 +542,23 @@ unsafe fn music(p: &mut Painter, s: &State, w: i32, h: i32) {
     p.icon_button(play, if playing { I_PAUSE } else { I_PLAY }, Hit::MediaPlay, true);
     p.icon_button(p.r(278, 146, 322, 190), I_NEXT, Hit::MediaNext, false);
 
-    p.volume_row(24, 230, EXPANDED_W - 24, s.ctl.volume);
+    // Время трека и полоска перемотки.
+    if let Some((cur, dur)) = progress {
+        let right = EXPANDED_W - 24;
+        p.text(p.f.small, &fmt_time(cur), p.r(24, 204, 70, 222), DIM, DT_LEFT);
+        p.text(p.f.small, &fmt_time(dur), p.r(right - 56, 204, right, 222), DIM, DT_RIGHT);
+        let bar = p.r(76, 211, right - 62, 215);
+        p.fill(bar, 4, PANEL);
+        let fill = RECT { right: bar.left + ((bar.right - bar.left) as f64 * cur / dur) as i32, ..bar };
+        if fill.right - fill.left >= p.s(4) {
+            p.fill(fill, 4, if p.hovered(Hit::Seek) { ACCENT } else { FG });
+        }
+        if can_seek {
+            p.hit(RECT { top: bar.top - p.s(8), bottom: bar.bottom + p.s(8), ..bar }, Hit::Seek);
+        }
+    }
+
+    p.volume_row(24, 240, EXPANDED_W - 24, s.ctl.volume);
     hint(p, w, h, "Колесо мыши — громкость");
 }
 
@@ -491,16 +664,19 @@ unsafe fn controls(p: &mut Painter, s: &State, w: i32) {
         None => "VPN".to_string(),
     };
     let muted = s.ctl.volume.map(|v| v.1);
-    let tiles: [(Ctl, &str, String, Option<bool>); 5] = [
+    let tiles: [(Ctl, &str, String, Option<bool>); 6] = [
         (Ctl::Wifi, I_WIFI, "Wi-Fi".into(), radios.wifi),
         (Ctl::Bt, I_BT, "Bluetooth".into(), radios.bt),
         (Ctl::Vpn, I_VPN, vpn_label, s.ctl.vpn.as_ref().map(|v| v.1)),
         (Ctl::Dark, I_THEME, "Тёмная тема".into(), s.ctl.dark),
         (Ctl::Mute, if muted == Some(true) { I_MUTE } else { I_VOL }, "Звук".into(), muted.map(|m| !m)),
+        // Не переключатель, а кнопка: всегда «выключена».
+        (Ctl::Shot, I_SHOT, "Скриншот".into(), Some(false)),
     ];
     let gap = p.s(8);
     let left = p.s(20);
-    let tw = (w - 2 * left - 4 * gap) / 5;
+    let n = tiles.len() as i32;
+    let tw = (w - 2 * left - (n - 1) * gap) / n;
     for (i, (c, icon, label, state)) in tiles.iter().enumerate() {
         let x = left + i as i32 * (tw + gap);
         let r = RECT { left: x, top: p.s(58), right: x + tw, bottom: p.s(134) };
@@ -540,6 +716,19 @@ unsafe fn controls(p: &mut Painter, s: &State, w: i32) {
         p.text(p.f.icon, icon, RECT { left: r.left + p.s(12), right: r.left + p.s(36), ..r }, FG, DT_LEFT);
         p.text(p.f.small, label, RECT { left: r.left + p.s(36), right: r.right - p.s(6), ..r }, FG, DT_LEFT | DT_END_ELLIPSIS);
         p.hit(r, h);
+    }
+    // Кто держит микрофон и камеру.
+    let u = privacy::IN_USE.lock().unwrap().clone();
+    let mut parts = Vec::new();
+    if !u.mic.is_empty() {
+        parts.push(format!("Микрофон: {}", u.mic.join(", ")));
+    }
+    if !u.cam.is_empty() {
+        parts.push(format!("Камера: {}", u.cam.join(", ")));
+    }
+    if !parts.is_empty() {
+        let c = if u.cam.is_empty() { MIC } else { CAM };
+        p.text(p.f.small, &format!("●  {}", parts.join("   ·   ")), p.r(20, 274, EXPANDED_W - 20, 294), c, DT_LEFT | DT_END_ELLIPSIS);
     }
     hint(p, w, scale(EXPANDED_H, s.dpi), "Колесо мыши — громкость · Нет плитки? Клик откроет настройки");
 }
