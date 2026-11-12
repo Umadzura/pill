@@ -21,6 +21,16 @@ features = [
     "implement",
     # Win32
     "Win32_Foundation",
+    # Монитор системы: список процессов ядра одним вызовом (NtQuerySystemInformation)
+    "Wdk_System_SystemInformation",
+    # Монитор системы: загрузка видеокарты по движкам (D3DKMTQueryStatistics, как диспетчер задач)
+    "Wdk_Graphics_Direct3D",
+    # Монитор системы: сеть (GetIfTable2), место и активность дисков (IOCTL_DISK_PERFORMANCE)
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
     # Яркость монитора ПК по DDC/CI (dxva2)
     "Win32_Devices_Display",
     "Win32_Graphics_Gdi",

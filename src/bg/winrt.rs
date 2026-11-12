@@ -15,7 +15,8 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_RADIO};
+use crate::feat::sysmon::{self, Load, Sampler, WarnProbe};
+use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_RADIO, WM_APP_SYS};
 use crate::sys::display::Displays;
 
 const ART: u32 = 128;
@@ -102,6 +103,14 @@ pub enum Job {
     Brightness,
     /// Поставить яркость 0..100. В пачке выполняется только последняя.
     SetBrightness(u8),
+    /// Снимок для вкладки «Система» (раз в секунду, пока она открыта).
+    SysSample,
+    /// Вкладку закрыли: освободить счётчики и буферы.
+    SysStop,
+    /// Нагрузка вот-вот пройдёт порог: снять процессы заранее.
+    LoadProbe,
+    /// Порог пройден: приготовить текст предупреждения.
+    LoadWarn(Load),
 }
 
 static TX: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
@@ -200,6 +209,8 @@ fn worker(rx: mpsc::Receiver<Job>) {
     let mut art_key = String::new();
     let mut radios: Vec<Radio> = Vec::new();
     let mut displays = Displays::new();
+    let mut sampler: Option<Sampler> = None;
+    let mut probe: Option<WarnProbe> = None;
 
     send(Job::Refresh);
     while let Ok(first) = rx.recv() {
@@ -278,6 +289,21 @@ fn worker(rx: mpsc::Receiver<Job>) {
                 Job::Brightness => {
                     *BRIGHTNESS.lock().unwrap() = displays.get();
                     notify(WM_APP_BRIGHT);
+                }
+                Job::SysSample => {
+                    let snap = sampler.get_or_insert_with(Sampler::new).sample();
+                    *sysmon::SNAPSHOT.lock().unwrap() = Some(snap);
+                    notify(WM_APP_SYS);
+                }
+                Job::SysStop => {
+                    sampler = None;
+                    *sysmon::SNAPSHOT.lock().unwrap() = None;
+                }
+                Job::LoadProbe => probe = Some(WarnProbe::take()),
+                Job::LoadWarn(kind) => {
+                    let p = probe.take().unwrap_or_else(WarnProbe::take);
+                    *sysmon::LOAD_WARN.lock().unwrap() = Some(p.finish(kind));
+                    notify(WM_APP_SYS);
                 }
                 Job::SetBrightness(pct) => {
                     displays.set(pct);

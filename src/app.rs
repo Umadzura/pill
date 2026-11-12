@@ -14,6 +14,7 @@ use crate::bg::winrt;
 use crate::feat::clip::{self, ClipHit};
 use crate::feat::ctl::{self, CtlHit};
 use crate::feat::music::{self, MusicHit};
+use crate::feat::sysmon::{self, LoadAction};
 use crate::feat::{cmd, osd, timers};
 use crate::ids::*;
 use crate::{input, pill, shell, sys, ui};
@@ -24,13 +25,15 @@ pub enum Tab {
     Clipboard,
     Commands,
     Controls,
+    System,
 }
 
-pub const TABS: [(Tab, &str); 4] = [
+pub const TABS: [(Tab, &str); 5] = [
     (Tab::Music, "Музыка"),
     (Tab::Clipboard, "Буфер"),
     (Tab::Commands, "Команды"),
     (Tab::Controls, "Управление"),
+    (Tab::System, "Система"),
 ];
 
 /// Кликабельные зоны. Заполняются при отрисовке, по ним же ищем клик и наведение.
@@ -72,6 +75,9 @@ pub struct State {
     pub ctl: ctl::CtlState,
     pub timers: timers::Timers,
     pub osd: osd::Osd,
+    pub load: sysmon::LoadWatch,
+    /// Воркер сейчас собирает снимки для вкладки «Система».
+    pub sys_sampling: bool,
 }
 
 thread_local! {
@@ -95,6 +101,8 @@ pub unsafe fn init_state() {
         ctl: ctl::CtlState::default(),
         timers: timers::Timers::default(),
         osd: osd::Osd::new(),
+        load: sysmon::LoadWatch::default(),
+        sys_sampling: false,
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(s));
 }
@@ -165,6 +173,7 @@ unsafe fn on_tab(hwnd: HWND, t: Tab) -> Redraw {
     if t == Tab::Controls {
         ctl::refresh();
     }
+    sys_sampling_tick();
     Redraw::Content
 }
 
@@ -179,16 +188,35 @@ unsafe fn on_wheel(hwnd: HWND, delta: i32) {
             st(|s| input::scroll_clip(s, notches));
             Redraw::Content
         }
-        Tab::Commands => Redraw::None,
+        Tab::Commands | Tab::System => Redraw::None,
     };
     redraw(hwnd, r);
 }
 
+/// Вкладка «Система» открыта — просим воркер снять снимок; закрыли — освободить.
+fn sys_sampling_tick() {
+    let (want, was) = st(|s| {
+        let want = s.shell.expanded && s.shell.tab == Tab::System;
+        (want, std::mem::replace(&mut s.sys_sampling, want))
+    });
+    if want {
+        winrt::send(winrt::Job::SysSample);
+    } else if was {
+        winrt::send(winrt::Job::SysStop);
+    }
+}
+
 unsafe fn on_tick(hwnd: HWND) {
-    let (beep, confirm_gone) = st(|s| (s.timers.tick(Instant::now()), s.ctl.tick()));
+    let (beep, confirm_gone, load) = st(|s| (s.timers.tick(Instant::now()), s.ctl.tick(), s.load.tick()));
     if beep {
         let _ = MessageBeep(MB_ICONEXCLAMATION);
     }
+    match load {
+        LoadAction::None => {}
+        LoadAction::Probe(_) => winrt::send(winrt::Job::LoadProbe),
+        LoadAction::Warn(k) => winrt::send(winrt::Job::LoadWarn(k)),
+    }
+    sys_sampling_tick();
     shell::fullscreen_tick(hwnd);
     // Перерисовываем только если что-то видимое поменялось.
     let (changed, expanded, live) =
@@ -312,6 +340,14 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         }
         WM_APP_PRIVACY => shell::layout(hwnd),
         WM_APP_VIZ => ui::viz::on_frame(hwnd),
+        WM_APP_SYS => {
+            let warn = sysmon::LOAD_WARN.lock().unwrap().take();
+            if let Some(text) = warn {
+                osd::show(hwnd, osd::Flash::Text(text, true), 8000);
+            } else if st(|s| s.shell.expanded && s.shell.tab == Tab::System) {
+                let _ = InvalidateRect(hwnd, None, false);
+            }
+        }
         WM_POWERBROADCAST => {
             if wparam.0 as u32 == PBT_POWERSETTINGCHANGE {
                 if let Some(ev) = sys::power::parse_notify(lparam) {
