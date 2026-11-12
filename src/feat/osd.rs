@@ -1,5 +1,6 @@
-//! Временные надписи в свёрнутой пилюле (OSD): громкость, зарядка, предупреждения о батарее.
+//! Временные надписи в свёрнутой пилюле (OSD): громкость, яркость, зарядка, предупреждения о батарее.
 //! Новое событие заменяет старое, одноразовый TIMER_FLASH убирает надпись.
+//! Батарея и яркость приходят событиями WM_POWERBROADCAST, без опроса.
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::InvalidateRect;
@@ -10,12 +11,15 @@ use crate::app::st;
 use crate::ids::TIMER_FLASH;
 use crate::shell::layout;
 use crate::sys;
+use crate::sys::power::{Battery, PowerEvent};
 
-const FLASH_VOLUME_MS: u32 = 1500;
+const FLASH_LEVEL_MS: u32 = 1500;
 
 pub enum Flash {
     /// Громкость: уровень 0..1, без звука.
     Volume(f32, bool),
+    /// Яркость экрана: уровень 0..1.
+    Brightness(f32),
     /// Текст; true — предупреждение (другой цвет).
     Text(String, bool),
 }
@@ -27,15 +31,19 @@ pub struct Osd {
     pub audio: Option<sys::audio::Watch>,
     /// Последняя известная громкость: флешим только при реальном изменении.
     last_vol: Option<(f32, bool)>,
-    /// Было ли питание от сети на прошлом тике (None — ещё не знаем или батареи нет).
+    /// Последнее состояние батареи (из события). None — батареи нет.
+    pub battery: Option<Battery>,
+    /// Было ли питание от сети в прошлом событии (None — ещё не знаем или батареи нет).
     last_ac: Option<bool>,
+    /// Последняя яркость из события: первое событие после подписки только запоминаем.
+    last_bright: Option<u8>,
     /// Какое предупреждение о заряде уже показали: 0, 20 или 10.
     batt_warned: u8,
 }
 
 impl Osd {
     pub fn new() -> Self {
-        Osd { last_vol: sys::audio::volume(), ..Default::default() }
+        Osd { last_vol: sys::audio::volume(), battery: sys::power::battery(), ..Default::default() }
     }
 }
 
@@ -66,7 +74,7 @@ pub unsafe fn on_volume(hwnd: HWND, level: f32, muted: bool) {
         // В раскрытой панели громкость и так видна.
         let _ = InvalidateRect(hwnd, None, false);
     } else if changed {
-        show(hwnd, Flash::Volume(level, muted), FLASH_VOLUME_MS);
+        show(hwnd, Flash::Volume(level, muted), FLASH_LEVEL_MS);
     }
 }
 
@@ -106,24 +114,52 @@ fn battery_event(prev_ac: Option<bool>, warned: &mut u8, pct: u8, ac: bool) -> O
     }
 }
 
-/// Раз в секунду: зарядку подключили/отключили, заряд упал до порога. На ПК без батареи ничего.
-pub unsafe fn battery_tick(hwnd: HWND) {
-    let Some(b) = sys::power::battery() else { return };
+/// WM_POWERBROADCAST / PBT_POWERSETTINGCHANGE.
+pub unsafe fn on_power(hwnd: HWND, ev: PowerEvent) {
+    match ev {
+        PowerEvent::Battery => on_battery(hwnd),
+        PowerEvent::Brightness(v) => on_brightness(hwnd, v),
+    }
+}
+
+/// Зарядку подключили/отключили или сменился процент. На ПК без батареи не приходит.
+unsafe fn on_battery(hwnd: HWND) {
+    let b = sys::power::battery();
     let ev = st(|s| {
+        s.osd.battery = b;
+        let b = b?;
         let prev = s.osd.last_ac.replace(b.ac);
         battery_event(prev, &mut s.osd.batt_warned, b.percent, b.ac)
     });
-    if let Some((text, warn)) = ev {
-        if warn {
-            let _ = MessageBeep(MB_ICONEXCLAMATION);
+    match ev {
+        Some((text, warn)) => {
+            if warn {
+                let _ = MessageBeep(MB_ICONEXCLAMATION);
+            }
+            show(hwnd, Flash::Text(text, warn), if warn { 8000 } else { 3000 });
         }
-        show(hwnd, Flash::Text(text, warn), if warn { 8000 } else { 3000 });
+        // Процент в пилюле мог поменяться.
+        None => layout(hwnd),
+    }
+}
+
+/// Яркость встроенного экрана поменялась (клавиши, ползунок Windows, датчик, мы сами).
+unsafe fn on_brightness(hwnd: HWND, v: u8) {
+    *crate::bg::winrt::BRIGHTNESS.lock().unwrap() = Some(v);
+    let (changed, expanded) = st(|s| {
+        let prev = s.osd.last_bright.replace(v);
+        (prev.is_some() && prev != Some(v), s.shell.expanded)
+    });
+    if expanded {
+        let _ = InvalidateRect(hwnd, None, false);
+    } else if changed {
+        show(hwnd, Flash::Brightness(v as f32 / 100.0), FLASH_LEVEL_MS);
     }
 }
 
 /// «⚡64%» для свёрнутой пилюли. None, если батареи нет.
-pub fn battery_short() -> Option<String> {
-    let b = sys::power::battery()?;
+pub fn battery_short(b: Option<Battery>) -> Option<String> {
+    let b = b?;
     Some(format!("{}{}%", if b.ac { "⚡" } else { "" }, b.percent))
 }
 

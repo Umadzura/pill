@@ -15,7 +15,7 @@ use crate::{pill, sys, ui};
 pub const COLLAPSED_MIN_W: i32 = 190;
 pub const COLLAPSED_H: i32 = 32;
 pub const EXPANDED_W: i32 = 560;
-pub const EXPANDED_H: i32 = 340;
+pub const EXPANDED_H: i32 = 370;
 /// Ширина свёрнутой пилюли с полоской громкости.
 pub const LEVEL_W: i32 = 240;
 const TOP_MARGIN: i32 = 6;

@@ -10,8 +10,18 @@ use crate::feat::osd::Flash;
 use crate::pill::{self, DOT};
 
 pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
-    if let (true, Some(Flash::Volume(level, muted))) = (pill::shows_level(s), &s.osd.flash) {
-        level_bar(p, rc, *level, *muted);
+    if pill::shows_level(s) {
+        match &s.osd.flash {
+            Some(Flash::Volume(level, muted)) => {
+                let icon = if *muted { I_MUTE } else { I_VOL_LEVELS[((level * 3.0).ceil() as usize).min(3)] };
+                let pct = if *muted { "выкл".to_string() } else { format!("{}%", (level * 100.0).round() as i32) };
+                level_bar(p, rc, icon, &pct, *level, *muted);
+            }
+            Some(Flash::Brightness(level)) => {
+                level_bar(p, rc, I_BRIGHT, &format!("{}%", (level * 100.0).round() as i32), *level, false);
+            }
+            _ => {}
+        }
         return;
     }
     let color = match (&s.timers.alarm, &s.osd.flash) {
@@ -83,13 +93,11 @@ unsafe fn progress(p: &Painter, rc: RECT) {
     p.fill(fill, 0, ACCENT);
 }
 
-/// Громкость: значок, полоска, проценты.
-unsafe fn level_bar(p: &mut Painter, rc: RECT, level: f32, muted: bool) {
-    let icon = if muted { I_MUTE } else { I_VOL_LEVELS[((level * 3.0).ceil() as usize).min(3)] };
+/// Уровень (громкость, яркость): значок, полоска, подпись.
+unsafe fn level_bar(p: &mut Painter, rc: RECT, icon: &str, label: &str, level: f32, muted: bool) {
     let (l, r) = (rc.left + p.s(16), rc.right - p.s(16));
     p.text(p.f.icon, icon, RECT { left: l, right: l + p.s(22), ..rc }, FG, DT_LEFT);
-    let pct = if muted { "выкл".to_string() } else { format!("{}%", (level * 100.0).round() as i32) };
-    p.text(p.f.bold, &pct, RECT { left: r - p.s(44), right: r, ..rc }, FG, DT_RIGHT);
+    p.text(p.f.bold, label, RECT { left: r - p.s(44), right: r, ..rc }, FG, DT_RIGHT);
     let mid = (rc.top + rc.bottom) / 2;
     let bar = RECT { left: l + p.s(30), top: mid - p.s(3), right: r - p.s(52), bottom: mid + p.s(3) };
     p.fill(bar, 6, TRACK);

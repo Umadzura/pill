@@ -1,4 +1,4 @@
-//! Вкладка «Управление»: плитки, громкость, батарея, питание, кто держит микрофон/камеру.
+//! Вкладка «Управление»: плитки, громкость, яркость, батарея, питание, кто держит микрофон/камеру.
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
@@ -50,8 +50,16 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         p.hit(r, hit);
     }
 
-    p.volume_row(20, 150, EXPANDED_W - 20, snap.volume);
-    p.text(p.f.small, &battery_long(), p.r(20, 184, EXPANDED_W - 20, 206), DIM, DT_LEFT);
+    p.volume_row(20, 146, EXPANDED_W - 20, snap.volume);
+    // Яркость показываем, только если есть чем управлять (ноутбук или монитор с DDC/CI).
+    let mut y = 178;
+    let bright = *winrt::BRIGHTNESS.lock().unwrap();
+    if let Some(b) = bright {
+        p.slider_row(20, 176, EXPANDED_W - 20, I_BRIGHT, Some(b as f32 / 100.0), false, Hit::Brightness);
+        y += 30;
+    }
+    p.text(p.f.small, &battery_long(), p.r(20, y + 6, EXPANDED_W - 20, y + 28), DIM, DT_LEFT);
+    let y = y + 44;
 
     let buttons = [
         (Pw::Lock, I_LOCK, "Блокировка"),
@@ -62,7 +70,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     let bw = (w - 2 * left - 3 * gap) / 4;
     for (i, (pw, icon, label)) in buttons.iter().enumerate() {
         let x = left + i as i32 * (bw + gap);
-        let r = RECT { left: x, top: p.s(222), right: x + bw, bottom: p.s(268) };
+        let r = RECT { left: x, top: p.s(y), right: x + bw, bottom: p.s(y + 46) };
         let hit = Hit::Ctl(CtlHit::Power(*pw));
         let confirming = s.ctl.confirming(*pw);
         p.fill(r, 14, if confirming { DANGER } else if p.hovered(hit) { HOVER } else { PANEL });
@@ -82,7 +90,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     }
     if !parts.is_empty() {
         let c = if u.cam.is_empty() { MIC } else { CAM };
-        p.text(p.f.small, &format!("●  {}", parts.join("   ·   ")), p.r(20, 274, EXPANDED_W - 20, 294), c, DT_LEFT | DT_END_ELLIPSIS);
+        p.text(p.f.small, &format!("●  {}", parts.join("   ·   ")), p.r(20, y + 52, EXPANDED_W - 20, y + 72), c, DT_LEFT | DT_END_ELLIPSIS);
     }
-    p.hint(w, h, "Колесо мыши — громкость · Нет плитки? Клик откроет настройки");
+    p.hint(w, h, "Колесо — громкость, над яркостью — яркость · Нет плитки? Клик откроет настройки");
 }

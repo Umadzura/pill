@@ -20,9 +20,9 @@ pub fn plain(s: &State) -> bool {
     s.timers.alarm.is_none() && s.osd.flash.is_none()
 }
 
-/// Сейчас показывается полоска уровня (громкость), а не текст.
+/// Сейчас показывается полоска уровня (громкость, яркость), а не текст.
 pub fn shows_level(s: &State) -> bool {
-    s.timers.alarm.is_none() && matches!(s.osd.flash, Some(Flash::Volume(..)))
+    s.timers.alarm.is_none() && matches!(s.osd.flash, Some(Flash::Volume(..) | Flash::Brightness(_)))
 }
 
 /// (микрофон занят, камера занята)
@@ -38,15 +38,15 @@ pub fn text(s: &State) -> String {
     }
     match &s.osd.flash {
         Some(Flash::Text(t, _)) => return t.clone(),
-        // Полоска рисуется отдельно (ui::collapsed::level), ширина фиксированная.
-        Some(Flash::Volume(..)) => return String::new(),
+        // Полоска рисуется отдельно (ui::collapsed::level_bar), ширина фиксированная.
+        Some(Flash::Volume(..) | Flash::Brightness(_)) => return String::new(),
         None => {}
     }
     let mut parts = vec![time_text()];
     if let Some(left) = s.timers.nearest_left() {
         parts.push(format!("⏱ {}", fmt_dur(left)));
     }
-    if let Some(b) = battery_short() {
+    if let Some(b) = battery_short(s.osd.battery) {
         parts.push(b);
     }
     parts.join("   ")

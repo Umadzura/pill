@@ -1,5 +1,6 @@
-//! Фоновый поток WinRT: текущий трек (GSMTC), обложка, Wi-Fi/Bluetooth.
+//! Фоновый COM/WinRT-поток (MTA): текущий трек (GSMTC), обложка, Wi-Fi/Bluetooth, яркость экрана.
 //! Ничего не опрашивает: просыпается только по событиям системы или по команде из UI.
+//! Здесь всё, что блокирует дольше 50 мс (`.get()`, WMI, DDC/CI).
 
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
@@ -14,7 +15,8 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-use crate::ids::{WM_APP_MEDIA, WM_APP_RADIO};
+use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_RADIO};
+use crate::sys::display::Displays;
 
 const ART: u32 = 128;
 
@@ -76,6 +78,9 @@ pub struct Radios {
 
 pub static RADIOS: Mutex<Radios> = Mutex::new(Radios { wifi: None, bt: None });
 
+/// Яркость 0..100 последнего прочитанного экрана. None — управлять нечем (или ещё не читали).
+pub static BRIGHTNESS: Mutex<Option<u8>> = Mutex::new(None);
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Kind {
     Wifi,
@@ -93,6 +98,10 @@ pub enum Job {
     Prev,
     Radios,
     SetRadio(Kind, bool),
+    /// Перечитать яркость (при раскрытии «Управления»).
+    Brightness,
+    /// Поставить яркость 0..100. В пачке выполняется только последняя.
+    SetBrightness(u8),
 }
 
 static TX: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
@@ -190,12 +199,17 @@ fn worker(rx: mpsc::Receiver<Job>) {
     let mut sub: Option<Sub> = None;
     let mut art_key = String::new();
     let mut radios: Vec<Radio> = Vec::new();
+    let mut displays = Displays::new();
 
     send(Job::Refresh);
     while let Ok(first) = rx.recv() {
         // Схлопываем пачку одинаковых событий в одно.
         let mut jobs = vec![first];
         while let Ok(j) = rx.try_recv() {
+            // Колесо мыши шлёт яркость пачкой: DDC медленный, ставим только последнее значение.
+            if matches!(j, Job::SetBrightness(_)) {
+                jobs.retain(|x| !matches!(x, Job::SetBrightness(_)));
+            }
             if !jobs.contains(&j) {
                 jobs.push(j);
             }
@@ -260,6 +274,16 @@ fn worker(rx: mpsc::Receiver<Job>) {
                     }
                     read_radios(&mut radios);
                     notify(WM_APP_RADIO);
+                }
+                Job::Brightness => {
+                    *BRIGHTNESS.lock().unwrap() = displays.get();
+                    notify(WM_APP_BRIGHT);
+                }
+                Job::SetBrightness(pct) => {
+                    displays.set(pct);
+                    // Не перечитываем: DDC отвечает медленно и иногда старым значением.
+                    *BRIGHTNESS.lock().unwrap() = Some(pct);
+                    notify(WM_APP_BRIGHT);
                 }
             }
         }

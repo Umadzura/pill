@@ -47,6 +47,7 @@ pub const I_APP: &str = "\u{E71D}";
 pub const I_RUN: &str = "\u{E756}";
 pub const I_MUSIC: &str = "\u{E8D6}";
 pub const I_SHOT: &str = "\u{E8C6}"; // ножницы, как у «Ножниц» Windows
+pub const I_BRIGHT: &str = "\u{E706}";
 /// Громкость по уровням: 0, 1/3, 2/3, полная.
 pub const I_VOL_LEVELS: [&str; 4] = ["\u{E992}", "\u{E993}", "\u{E994}", "\u{E995}"];
 
@@ -173,19 +174,25 @@ impl Painter<'_> {
     }
     /// Полоска громкости с процентами справа.
     pub unsafe fn volume_row(&mut self, x: i32, y: i32, right: i32, vol: Option<(f32, bool)>) {
-        let (level, muted) = vol.unwrap_or((0.0, false));
-        self.text(self.f.icon, if muted { I_MUTE } else { I_VOL }, self.r(x, y, x + 24, y + 26), DIM, DT_LEFT);
+        let muted = vol.map(|v| v.1).unwrap_or(false);
+        self.slider_row(x, y, right, if muted { I_MUTE } else { I_VOL }, vol.map(|v| v.0), muted, Hit::Volume);
+    }
+    /// Ползунок: значок, полоска, проценты. level None — значение неизвестно («—»). x, y, right в логических px.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn slider_row(&mut self, x: i32, y: i32, right: i32, icon: &str, level: Option<f32>, dim: bool, h: Hit) {
+        let lv = level.unwrap_or(0.0).clamp(0.0, 1.0);
+        self.text(self.f.icon, icon, self.r(x, y, x + 24, y + 26), DIM, DT_LEFT);
         let bar = self.r(x + 32, y + 10, right - 52, y + 16);
         self.fill(bar, 6, PANEL);
         let mut filled = bar;
-        filled.right = bar.left + ((bar.right - bar.left) as f32 * level) as i32;
+        filled.right = bar.left + ((bar.right - bar.left) as f32 * lv) as i32;
         if filled.right > filled.left {
-            self.fill(filled, 6, if muted { DIM } else { ACCENT });
+            self.fill(filled, 6, if dim { DIM } else { ACCENT });
         }
-        let pct = if vol.is_some() { format!("{}%", (level * 100.0).round() as i32) } else { "—".into() };
+        let pct = if level.is_some() { format!("{}%", (lv * 100.0).round() as i32) } else { "—".into() };
         self.text(self.f.normal, &pct, self.r(right - 46, y, right, y + 26), DIM, DT_RIGHT);
         // Зона клика выше и ниже полоски, чтобы легко попасть.
-        self.hit(RECT { top: bar.top - self.s(10), bottom: bar.bottom + self.s(10), ..bar }, Hit::Volume);
+        self.hit(RECT { top: bar.top - self.s(10), bottom: bar.bottom + self.s(10), ..bar }, h);
     }
     /// Поле ввода (поиск в буфере / командная строка).
     pub unsafe fn input(&mut self, w: i32, s: &State, placeholder: &str) {
