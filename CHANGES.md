@@ -170,3 +170,33 @@ taskkill /IM pill.exe /F
 - Новых нарушений не найдено: постоянных потоков по-прежнему 3 (UI, winrt, watch) плюс краткий `set_dark`; `refresh_want`, `set_want`, `on_frame` не зовут Win32 внутри `st()`; `WM_APP_VIZ` записан в `ids.rs` и в реестр.
 - Исключение: наблюдатель просыпается 30 раз в секунду, пока играет музыка (согласовано, раздел 1 ARCHITECTURE.md).
 - Остаются прежние: поток `sys/theme.rs::set_dark`, VPN и чтение pbk в UI-потоке, нет бейджей в `pill.rs`.
+
+---
+
+# Монитор системы и предупреждение о нагрузке (коммит 559b846, 2026-11-12)
+
+## Что добавлено
+- Вкладка `Tab::System` «Система» (`ui/sys.rs`): 4 плитки (процессор, память, видеокарта, сеть), график ЦП за 60 с, системный диск и его активность, топ-5 приложений (ЦП %, память). Цвет WARN при ≥85%. Вкладок стало 5, ширина вкладки 110 -> 88 px.
+- `sys/sysinfo.rs`: `cpu_times` (GetSystemTimes), `memory` (GlobalMemoryStatusEx), `cpu_count`, `processes` (NtQuerySystemInformation, буфер растёт при `STATUS_INFO_LENGTH_MISMATCH`), `net_totals` (GetIfTable2, только железо), `system_disk` (GetDiskFreeSpaceExW), `Disks` (IOCTL_DISK_PERFORMANCE на `\.\PhysicalDrive0..15`, без админа), `Gpu` (D3DKMTEnumAdapters2 + D3DKMTQueryStatistics, самый занятый движок).
+- `feat/sysmon.rs`: `cpu_pct`, `parse_processes`, `apps()` (сложение по имени, % всей машины), `top_by_cpu`/`top_by_ram`, `gpu_busy`, `Snapshot`/`SNAPSHOT`, `Sampler`, `WarnProbe`, `LoadWatch`, `fmt_bytes`/`fmt_rate`. 6 новых тестов, всего 19.
+- Предупреждение о нагрузке: ЦП или память ≥90% 30 с подряд -> надпись в пилюле на 8 с (`osd::Flash::Text`) с именем процесса. За 2 с до порога снимается список процессов, после предупреждения молчит до 20 с спокойствия.
+- `bg/winrt.rs`: `Job::SysSample`, `SysStop`, `LoadProbe`, `LoadWarn`; `static LOAD_WARN`. `ids.rs`: `WM_APP_SYS = WM_APP+10` (резерв под `events.rs` теперь `+11`).
+- `app.rs`: `State.load`, `State.sys_sampling`, `sys_sampling_tick()` (секундный тик и клик по вкладке).
+- `Cargo.toml`: фичи `Wdk_System_SystemInformation`, `Wdk_Graphics_Direct3D`, `Win32_NetworkManagement_IpHelper`, `Win32_NetworkManagement_Ndis`, `Win32_Storage_FileSystem`, `Win32_System_IO`, `Win32_System_Ioctl`.
+
+## Решение: без PDH
+Счётчик «GPU Engine(*)» добавлял ~7 МБ WS / ~6 МБ приватной, даже один `PhysicalDisk(_Total)` ~5 МБ, и после `PdhCloseQuery` память не возвращалась. D3DKMT и IOCTL почти ничего не стоят.
+
+## Проверено
+- На ПК вкладка показывает все данные (скриншот: ЦП 3%, память 8,4/15,1 ГБ, видеокарта 1%, сеть ↓223 КБ/с, диск 137,5/952 ГБ, активность 2,2 МБ/с, топ Code/svchost/dwm/MsMpEng/Spotify).
+- Сборка без предупреждений, `cargo test`: 19 тестов проходят.
+- Замеры: вкладка открыта WS 23,2 МБ / приватная 4,2 МБ, ~0,016 с ЦП за 3 с (~0,5%); закрыта 22,6 / 3,6, 0%. Снимок ~5 мс (~4,5 мс список процессов). Exe 684 032 байта.
+
+## Не проверено
+- Предупреждение о нагрузке вживую (30 с при 90%): только тесты `LoadWatch::step`.
+- Ноутбук, несколько видеокарт.
+
+## Расхождения с правилами
+- Согласованное исключение: `s.load.tick()` на секундном тике работает и в свёрнутом виде (два вызова в секунду, новых таймеров и потоков нет). Записано в разделе 1 ARCHITECTURE.md.
+- `s.load.tick()` вызывается внутри `st()` и зовёт `GetSystemTimes`/`GlobalMemoryStatusEx`. Эти вызовы не шлют сообщений окну, `BorrowMutError` не будет, но формально это Win32 внутри `st()`.
+- Остаются прежние: поток `sys/theme.rs::set_dark`, VPN и чтение pbk в UI-потоке, нет бейджей в `pill.rs`.
