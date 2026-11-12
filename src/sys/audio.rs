@@ -1,5 +1,5 @@
-//! События громкости без опроса: система сама зовёт колбэк при смене громкости
-//! или устройства вывода, а колбэк только шлёт сообщение окну.
+//! Громкость устройства вывода: чтение, установка и события без опроса.
+//! Система сама зовёт колбэк при смене громкости или устройства, а колбэк только шлёт сообщение окну.
 
 use windows::core::{implement, Result, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -7,12 +7,47 @@ use windows::Win32::Media::Audio::Endpoints::*;
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::*;
 use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
-use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-/// wparam = громкость × 1000, lparam = 1, если звук выключен.
-pub const WM_APP_VOLUME: u32 = WM_APP + 5;
-/// Сменилось устройство вывода по умолчанию (наушники, колонки).
-pub const WM_APP_AUDIODEV: u32 = WM_APP + 6;
+use crate::ids::{WM_APP_AUDIODEV, WM_APP_VOLUME};
+
+unsafe fn endpoint() -> Option<IAudioEndpointVolume> {
+    let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+    let dev = en.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
+    dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None).ok()
+}
+
+/// (уровень 0..1, без звука)
+pub fn volume() -> Option<(f32, bool)> {
+    unsafe {
+        let v = endpoint()?;
+        let level = v.GetMasterVolumeLevelScalar().ok()?;
+        let muted = v.GetMute().map(|m| m.as_bool()).unwrap_or(false);
+        Some((level, muted))
+    }
+}
+
+pub fn set_volume(level: f32) {
+    unsafe {
+        if let Some(v) = endpoint() {
+            let _ = v.SetMasterVolumeLevelScalar(level.clamp(0.0, 1.0), std::ptr::null());
+            if level > 0.0 {
+                let _ = v.SetMute(false, std::ptr::null());
+            }
+        }
+    }
+}
+
+pub fn toggle_mute() {
+    unsafe {
+        if let Some(v) = endpoint() {
+            let m = v.GetMute().map(|m| m.as_bool()).unwrap_or(false);
+            let _ = v.SetMute(!m, std::ptr::null());
+        }
+    }
+}
+
+// ---------- события ----------
 
 fn post(hwnd: isize, msg: u32, w: usize, l: isize) {
     unsafe {

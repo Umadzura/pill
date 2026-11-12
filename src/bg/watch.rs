@@ -8,9 +8,9 @@ use windows::core::{w, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Registry::*;
 use windows::Win32::System::Threading::{CreateEventW, WaitForMultipleObjects, INFINITE};
-use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-pub const WM_APP_PRIVACY: u32 = WM_APP + 7;
+use crate::ids::WM_APP_PRIVACY;
 
 const BASE: &str = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\";
 
