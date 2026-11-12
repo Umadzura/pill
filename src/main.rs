@@ -95,6 +95,7 @@ fn main() {
         }
         bg::winrt::start(hwnd);
         bg::watch::start(hwnd);
+        bg::api::start(hwnd);
         let watch = sys::audio::Watch::start(hwnd);
         st(|s| s.osd.audio = watch);
 

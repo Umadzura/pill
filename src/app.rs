@@ -15,6 +15,7 @@ use crate::feat::clip::{self, ClipHit};
 use crate::feat::ctl::{self, CtlHit};
 use crate::feat::music::{self, MusicHit};
 use crate::feat::sysmon::{self, LoadAction};
+use crate::feat::api;
 use crate::feat::{cmd, osd, timers};
 use crate::ids::*;
 use crate::{input, pill, shell, sys, ui};
@@ -76,6 +77,8 @@ pub struct State {
     pub timers: timers::Timers,
     pub osd: osd::Osd,
     pub load: sysmon::LoadWatch,
+    /// Задачи от скриптов (локальный API).
+    pub tasks: api::Tasks,
     /// Воркер сейчас собирает снимки для вкладки «Система».
     pub sys_sampling: bool,
 }
@@ -102,6 +105,7 @@ pub unsafe fn init_state() {
         timers: timers::Timers::default(),
         osd: osd::Osd::new(),
         load: sysmon::LoadWatch::default(),
+        tasks: api::Tasks::default(),
         sys_sampling: false,
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(s));
@@ -209,7 +213,11 @@ fn sys_sampling_tick() {
 unsafe fn on_tick(hwnd: HWND) {
     // Два дешёвых счётчика для предупреждения о нагрузке — вне st().
     let (cpu, mem) = (sys::sysinfo::cpu_times(), sys::sysinfo::memory());
-    let (beep, confirm_gone, load) = st(|s| (s.timers.tick(Instant::now()), s.ctl.tick(), s.load.tick(cpu, mem)));
+    let now = Instant::now();
+    let (beep, confirm_gone, load) = st(|s| {
+        s.tasks.expire(now);
+        (s.timers.tick(now), s.ctl.tick(), s.load.tick(cpu, mem))
+    });
     if beep {
         let _ = MessageBeep(MB_ICONEXCLAMATION);
     }
@@ -342,6 +350,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         }
         WM_APP_PRIVACY => shell::layout(hwnd),
         WM_APP_VIZ => ui::viz::on_frame(hwnd),
+        WM_APP_API => api::on_events(hwnd),
         WM_APP_SYS => {
             let warn = sysmon::LOAD_WARN.lock().unwrap().take();
             if let Some(text) = warn {

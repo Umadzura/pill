@@ -25,6 +25,8 @@ pub const WM_APP_BRIGHT: u32 = WM_APP + 8;
 pub const WM_APP_VIZ: u32 = WM_APP + 9;
 /// Воркер: готов снимок «Системы» или текст предупреждения о нагрузке (`feat::sysmon`).
 pub const WM_APP_SYS: u32 = WM_APP + 10;
+/// Поток API: пришли события от скриптов (`feat::api::QUEUE`).
+pub const WM_APP_API: u32 = WM_APP + 11;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
