@@ -6,7 +6,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::SetTimer;
 
 use crate::app::{st, Redraw};
-use crate::bg::winrt::{self, Job, Kind, BRIGHTNESS, RADIOS};
+use crate::bg::winrt::{self, Job, Kind, BRIGHTNESS, RADIOS, VPN};
 use crate::ids::{TIMER_CTL, TIMER_SHOT};
 use crate::input::close_panel;
 use crate::sys;
@@ -35,12 +35,11 @@ pub enum CtlHit {
     Power(Pw),
 }
 
-/// Состояние плиток, прочитанное при раскрытии панели.
+/// Состояние плиток, прочитанное при раскрытии панели (быстрое; VPN читает воркер — `winrt::VPN`).
 #[derive(Default)]
 pub struct Snapshot {
     pub volume: Option<(f32, bool)>,
     pub dark: Option<bool>,
-    pub vpn: Option<(String, bool)>,
 }
 
 #[derive(Default)]
@@ -66,11 +65,12 @@ impl CtlState {
     }
 }
 
-/// Перечитать плитки. Радио и яркость читает воркер и сам пришлёт WM_APP_RADIO / WM_APP_BRIGHT.
+/// Перечитать плитки. Радио, VPN и яркость читает воркер и сам пришлёт WM_APP_RADIO / WM_APP_BRIGHT.
 pub fn refresh() {
-    let snap = Snapshot { volume: sys::audio::volume(), dark: sys::theme::dark(), vpn: sys::net::vpn() };
+    let snap = Snapshot { volume: sys::audio::volume(), dark: sys::theme::dark() };
     st(|s| s.ctl.snap = snap);
     winrt::send(Job::Radios);
+    winrt::send(Job::Vpn);
     winrt::send(Job::Brightness);
 }
 
@@ -130,13 +130,18 @@ unsafe fn toggle(hwnd: HWND, c: Ctl) -> Redraw {
             }
         }
         Ctl::Vpn => {
-            sys::net::toggle_vpn();
-            // rasdial работает несколько секунд — перечитаем статус позже.
-            SetTimer(hwnd, TIMER_CTL, 3000, None);
+            if VPN.lock().unwrap().is_some() {
+                winrt::send(Job::ToggleVpn);
+                // rasdial работает несколько секунд — перечитаем статус позже.
+                SetTimer(hwnd, TIMER_CTL, 3000, None);
+            } else {
+                sys::launch::open("ms-settings:network-vpn", None);
+            }
         }
         Ctl::Dark => {
             let dark = st(|s| s.ctl.snap.dark.unwrap_or(false));
             sys::theme::set_dark(!dark);
+            winrt::send(Job::ThemeBroadcast);
         }
         Ctl::Mute => sys::audio::toggle_mute(),
         Ctl::Shot => {

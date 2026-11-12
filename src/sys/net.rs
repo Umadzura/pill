@@ -2,7 +2,7 @@
 
 use windows::Win32::NetworkManagement::Rras::*;
 
-use super::launch::{hidden, open};
+use super::launch::hidden;
 
 /// Имена VPN-профилей из телефонных книг Windows.
 fn vpn_entries() -> Vec<String> {
@@ -52,12 +52,11 @@ pub fn vpn() -> Option<(String, bool)> {
     entries.into_iter().next().map(|e| (e, false))
 }
 
+/// Подключить/отключить первый VPN-профиль. Профилей нет — ничего (настройки открывает UI).
 pub fn toggle_vpn() {
     match vpn() {
         Some((name, true)) => hidden("rasdial", &[&name, "/disconnect"]),
         Some((name, false)) => hidden("rasdial", &[&name]),
-        None => {
-            open("ms-settings:network-vpn", None);
-        }
+        None => {}
     }
 }

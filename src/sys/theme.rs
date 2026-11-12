@@ -22,14 +22,19 @@ pub fn dark() -> Option<bool> {
     unsafe { reg_dword(THEME_KEY, w!("AppsUseLightTheme")).map(|v| v == 0) }
 }
 
+/// Записать тему в реестр. Окнам о смене сообщает `broadcast()` (звать из фонового потока).
 pub fn set_dark(dark: bool) {
     unsafe {
         let v = if dark { 0 } else { 1 };
         set_reg_dword(THEME_KEY, w!("AppsUseLightTheme"), v);
         set_reg_dword(THEME_KEY, w!("SystemUsesLightTheme"), v);
     }
-    // Рассылка может подвиснуть на зависших окнах, поэтому в отдельном потоке.
-    std::thread::spawn(|| unsafe {
+}
+
+/// «Тема сменилась» всем окнам. Может подвиснуть на зависших окнах (до 500 мс на каждое),
+/// поэтому только из фонового воркера.
+pub fn broadcast() {
+    unsafe {
         let _ = SendMessageTimeoutW(
             HWND_BROADCAST,
             WM_SETTINGCHANGE,
@@ -39,5 +44,5 @@ pub fn set_dark(dark: bool) {
             500,
             None,
         );
-    });
+    }
 }

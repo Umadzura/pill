@@ -313,15 +313,15 @@ pub struct LoadWatch {
 }
 
 impl LoadWatch {
-    /// Раз в секунду. Достаёт счётчики сам (два системных вызова, микросекунды).
-    pub fn tick(&mut self) -> LoadAction {
-        let cur = sysinfo::cpu_times();
+    /// Раз в секунду. Счётчики (`sysinfo::cpu_times`, `sysinfo::memory`) читает вызывающий,
+    /// снаружи `st()`: внутри замыкания Win32 не зовём.
+    pub fn tick(&mut self, cur: Option<CpuTimes>, mem: Option<(u64, u64)>) -> LoadAction {
         let cpu = match (self.prev, cur) {
             (Some(a), Some(b)) => cpu_pct(a, b),
             _ => 0.0,
         };
         self.prev = cur;
-        let ram = sysinfo::memory().map(|(u, t)| u as f32 * 100.0 / t.max(1) as f32).unwrap_or(0.0);
+        let ram = mem.map(|(u, t)| u as f32 * 100.0 / t.max(1) as f32).unwrap_or(0.0);
         self.step(cpu, ram)
     }
 
