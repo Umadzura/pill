@@ -1,7 +1,7 @@
 # Архитектура Pill
 
 Читать перед тем, как добавлять функцию. Здесь описано, как всё устроено, какие правила нельзя нарушать и куда класть новый код.
-Состояние на 2026-11-12 (после визуализатора музыки). Если код разошёлся с этим файлом, правится файл.
+Состояние на 2026-11-12 (после монитора системы и предупреждения о нагрузке). Если код разошёлся с этим файлом, правится файл.
 
 ---
 
@@ -11,11 +11,11 @@ Pill существует ради того, чтобы быть лёгким. �
 
 | Правило | Почему | Как проверить |
 |---|---|---|
-| **В простое 0% CPU.** Никаких опросов чаще 1 раза в секунду. Единственный постоянный таймер `TIMER_CLOCK` (1 с). **Исключение (согласовано с пользователем): визуализатор музыки**, ~30 кадров/с, только пока играет музыка и пилюлю видно (не в полноэкранном режиме). Замер: играет, свёрнуто, 5 с — 0,016 с CPU (~0,3% ядра, на границе точности счётчика 15,6 мс); простой — 0,000 с. Других исключений нет. | Ради этого всё и затевалось (Island брал 16%). | Диспетчер задач, 5 минут в простое. |
+| **В простое 0% CPU.** Никаких опросов чаще 1 раза в секунду. Единственный постоянный таймер `TIMER_CLOCK` (1 с). **Исключение (согласовано с пользователем): визуализатор музыки**, ~30 кадров/с, только пока играет музыка и пилюлю видно (не в полноэкранном режиме). Замер: играет, свёрнуто, 5 с — 0,016 с CPU (~0,3% ядра, на границе точности счётчика 15,6 мс); простой — 0,000 с. **Второе исключение (согласовано): `s.load.tick()` на секундном тике, в том числе свёрнутым** (`GetSystemTimes` + `GlobalMemoryStatusEx`, предупреждение о нагрузке). Новых таймеров и потоков нет. Монитор системы (снимки процессов, GPU, диск, сеть) снимается только пока открыта вкладка «Система». Других исключений нет. | Ради этого всё и затевалось (Island брал 16%). | Диспетчер задач, 5 минут в простое. |
 | **Всё по событиям.** Сначала ищем системное уведомление (WM_*, COM-callback, WinRT-event, `RegNotifyChangeKeyValue`), опрос только если события нет. Опрашивать можно только пока панель раскрыта. | Опрос в свёрнутом виде съедает батарею ноутбука. | `grep SetTimer`: каждый новый таймер должен быть одноразовым или работать только в раскрытом виде. |
 | **Не больше 4 своих потоков**: UI, WinRT-воркер, наблюдатель (будущий), сеть (будущий). | Каждый поток стоит ~1 МБ стека и усложняет синхронизацию. | Новый поток добавляется только с записью в раздел 3. |
-| **Working set ≤ 30 МБ, приватная память ≤ 10 МБ.** Сейчас 23,2 / 3,4 (после раскрытия «Управления» и смены яркости 25,1 / 3,9: dxva2; во время игры музыки с визуализатором 26,1 / 4,5). | | Process Explorer после часа работы. |
-| **Exe ≤ 1,5 МБ (сейчас 629 248 байт), один файл, без ресурсов и DLL рядом.** | Portable: скопировал и запустил. | `ls target/release/pill.exe` |
+| **Working set ≤ 30 МБ, приватная память ≤ 10 МБ.** Сейчас 22,6 / 3,6 (после раскрытия «Управления» и смены яркости 25,1 / 3,9: dxva2; во время игры музыки с визуализатором 26,1 / 4,5; вкладка «Система» открыта 23,2 / 4,2). **PDH не использовать** (см. раздел 10). | | Process Explorer после часа работы. |
+| **Exe ≤ 1,5 МБ (сейчас 684 032 байта), один файл, без ресурсов и DLL рядом.** | Portable: скопировал и запустил. | `ls target/release/pill.exe` |
 | **Перерисовка только того, что поменялось.** `InvalidateRect` зовём только если видимое изменилось (сравнение со старым значением). | GDI-перерисовка 560×340 недорогая, но 60 раз в секунду уже заметно. | |
 | **UI-поток не блокируется дольше ~50 мс.** Долгое (WinRT `.get()`, сеть, `rasdial`, WMI, DDC/CI) уходит в фоновый поток. | Иначе пилюля подвисает при наведении. | |
 
@@ -27,20 +27,21 @@ Pill существует ради того, чтобы быть лёгким. �
 
 ```
 main.rs        110 строк  вход: panic hook, мьютекс, COM, DPI, класс окна, цикл сообщений, регистрация хоткеев
-ids.rs          55        все WM_APP_*, TIMER_*, HOTKEY_*, MENU_*
-app.rs         355        State из частей, st(), Hit/Tab/Redraw, wndproc-диспетчер, on_click, on_tick
+ids.rs          57        все WM_APP_*, TIMER_*, HOTKEY_*, MENU_*
+app.rs         391        State из частей, st(), Hit/Tab/Redraw, wndproc-диспетчер, on_click, on_tick, sys_sampling_tick
 shell.rs       283        окно: layout, раскрытие/сворачивание, полноэкран (AppBar), трей, DPI
 input.rs       217        клавиатура, поле ввода, вставка из буфера, close_panel
 pill.rs         67        модель свёрнутой пилюли: text, lead_width, shows_level (бейджей пока нет)
 
-ui/            ~820       GDI, State только читает
-  mod.rs        103       paint(): кадр, вкладки
-  paint.rs      223       цвета, значки MDL2, Fonts, Painter, виджеты slider_row (volume_row через него)/input/hint/icon_button
+ui/            ~930       GDI, State только читает
+  mod.rs        107       paint(): кадр, вкладки (TABS = 5, ширина вкладки 88 px)
+  paint.rs      230       цвета, значки MDL2, Fonts, Painter, виджеты slider_row (volume_row через него)/input/hint/icon_button
   collapsed.rs   98       свёрнутый вид (level_bar: громкость и яркость; 4 столбика визуализатора)
   viz.rs         63       VizArea, draw(), on_frame(): перерисовка только прямоугольника полосок
   music.rs 115  clip.rs 59 (ROWS = 9)  cmd.rs 50  ctl.rs 96 (строка яркости, если BRIGHTNESS = Some)
+  sys.rs        111       вкладка «Система»: 4 плитки, график ЦП 60 с, системный диск, топ-5 приложений; WARN при ≥85%
 
-feat/          ~1330      логика функций, без GDI
+feat/          ~1810      логика функций, без GDI
   clip.rs       201       History, ClipHit, on_hit/on_update
   cmd.rs        384       бывший launcher.rs: поиск, калькулятор, CmdRes, results, run_index
   ctl.rs        168       Ctl, Pw, CtlHit, Snapshot, CtlState, refresh, volume_at/volume_wheel, brightness_at/brightness_wheel
@@ -48,26 +49,28 @@ feat/          ~1330      логика функций, без GDI
   osd.rs        213       Flash (Volume/Brightness/Text), Osd (кэш батареи), on_volume, on_audio_device, on_power, battery_event (тест)
   timers.rs      77       Timers: tick/add/cancel/dismiss (тест)
   viz.rs        259       DSP без Win32: FFT 1024, окно Ханна, 24 полосы 40 Гц–16 кГц, group(); static SPECTRUM, WANT/WAKE/PENDING (4 теста)
+  sysmon.rs     480       монитор системы: cpu_pct, parse_processes (смещения SYSTEM_PROCESS_INFORMATION x64), apps() (сложение по имени), top_by_cpu/top_by_ram, gpu_busy, Snapshot + static SNAPSHOT, Sampler (живёт в winrt-воркере, пока вкладка открыта), WarnProbe, LoadWatch (≥90% 30 с подряд -> Warn; за 2 с до порога Probe; после предупреждения молчит до 20 с спокойствия) + static LOAD_WARN, fmt_bytes/fmt_rate (6 тестов)
 
-sys/           ~800       тонкие обёртки над Windows, без State
+sys/           ~1010       тонкие обёртки над Windows, без State
   audio.rs 143 (громкость + Watch с колбэками)  autostart.rs 23  clipboard.rs 69 (read_text/set_text)
   icon.rs 47  launch.rs 84 (open, run_line, Ctrl+V, force_foreground, hidden)  net.rs 63 (VPN)
   display.rs 213 (яркость: WMI на ноутбуке, DDC/CI на ПК, struct Displays для воркера, to_pct/from_pct с тестом)
   loopback.rs 104 (WASAPI loopback устройства вывода: shared, буфер 200 мс, float32 и PCM16 -> моно; Err при пропаже устройства)
   power.rs 80 (battery() -> Battery, register_notify/parse_notify -> PowerEvent, lock/sleep/restart/shutdown)  theme.rs 43
+  sysinfo.rs 210 (cpu_times, memory, cpu_count, processes(buf) через NtQuerySystemInformation, net_totals через GetIfTable2 (только железо), system_disk, struct Disks (IOCTL_DISK_PERFORMANCE на \\.\PhysicalDrive0..15, доступ 0), struct Gpu (D3DKMTEnumAdapters2 + D3DKMTQueryStatistics))
 
-bg/            ~680       фоновые потоки
-  winrt.rs      423       бывший media.rs: GSMTC, обложки, радио, яркость (Displays)
+bg/            ~710       фоновые потоки
+  winrt.rs      449       бывший media.rs: GSMTC, обложки, радио, яркость (Displays), снимки системы (Sampler)
   watch.rs      258       бывший privacy.rs: микрофон/камера (RegNotifyChangeKeyValue) и захват звука для визуализатора
 ```
 
-Всего ~4825 строк. Правила зависимостей:
+Всего ~5700 строк. Правила зависимостей:
 - `sys` и `bg` не знают `State`.
 - `feat` может звать слой приложения: `app::st`, `input::close_panel`/`paste`, `shell::layout`.
 - `ui` читает данные `feat` и `State`, но feat-логику не вызывает.
 - `app` знает всех и маршрутизирует.
 
-State: `{ shell, input, hits, hover, clip, cmd, ctl, timers, osd, viz_area }`.
+State: `{ shell, input, hits, hover, clip, cmd, ctl, timers, osd, viz_area, load, sys_sampling }`. `Tab`: Music, Clipboard, Commands, Controls, System.
 Hit: `Tab, Input, Volume, Brightness, Music(MusicHit), Clip(ClipHit), Cmd(usize), Ctl(CtlHit), Alarm`. `enum Redraw { None, Content, Layout }`.
 
 ---
@@ -96,13 +99,13 @@ Hit: `Tab, Input, Volume, Brightness, Music(MusicHit), Clip(ClipHit), Cmd(usize)
 
 Свои потоки сейчас:
 1. UI.
-2. WinRT-воркер (`bg/winrt.rs`): GSMTC, радио и яркость (`Job::Brightness`, `Job::SetBrightness(u8)`, в пачке выполняется только последний; результат в `static BRIGHTNESS: Mutex<Option<u8>>`, сообщение `WM_APP_BRIGHT`). `Displays` (WMI/DDC) живёт в этом потоке.
+2. WinRT-воркер (`bg/winrt.rs`): GSMTC, радио и яркость (`Job::Brightness`, `Job::SetBrightness(u8)`, в пачке выполняется только последний; результат в `static BRIGHTNESS: Mutex<Option<u8>>`, сообщение `WM_APP_BRIGHT`). `Displays` (WMI/DDC) живёт в этом потоке. Монитор системы: `Job::SysSample` (UI шлёт на секундном тике и при клике по вкладке, пока открыта «Система»; воркер держит `Sampler`, кладёт `Snapshot` в `static sysmon::SNAPSHOT`, `WM_APP_SYS`), `Job::SysStop` (вкладку закрыли: `Sampler` и снимок сбрасываются). Предупреждение: `Job::LoadProbe` (за 2 с до порога снять процессы), `Job::LoadWarn(Load)` (собрать текст с именем процесса в `static LOAD_WARN`, `WM_APP_SYS`). Снимок ~5 мс, из них ~4,5 мс список процессов; на это время воркер занят (медиа-события ждут).
 3. Наблюдатель (`bg/watch.rs`, MTA, инициализирует COM): один `WaitForMultipleObjects` по `[реестр микрофона, реестр камеры (если открылись), событие пробуждения визуализатора]`. Микрофон/камера: `WM_APP_PRIVACY`, результат в `static IN_USE`. Визуализатор: пока `viz::want()` — тайм-аут 33 мс, на тайм-ауте читает WASAPI loopback (`sys/loopback.rs`), считает спектр (`feat/viz.rs`), кладёт в `static SPECTRUM: Mutex<[f32;24]>` и шлёт `WM_APP_VIZ`; иначе `INFINITE`. `PENDING` (AtomicBool): кадр отправлен, но UI его ещё не нарисовал, новые не шлются. UI будит наблюдателя через `SetEvent(WAKE)` при смене `WANT` (`set_want`). Устройство пропало — переоткрытие не чаще раза в секунду. В тишине, когда полоски уже на нуле, UI не будится. Тему пока не слушает.
 4. Короткоживущий: `sys/theme.rs::set_dark` на время рассылки `WM_SETTINGCHANGE` (может подвиснуть).
 
 События питания (`WM_POWERBROADCAST`) приходят в UI-поток, своего потока не требуют.
 
-Статики для обмена между потоками: `MEDIA`, `RADIOS`, `BRIGHTNESS`, `IN_USE`, `SPECTRUM` (мьютексы), `WANT`, `WAKE`, `PENDING` (атомики).
+Статики для обмена между потоками: `MEDIA`, `RADIOS`, `BRIGHTNESS`, `IN_USE`, `SPECTRUM`, `SNAPSHOT`, `LOAD_WARN` (мьютексы), `WANT`, `WAKE`, `PENDING` (атомики).
 
 Резерв: сеть (`events.rs`, `127.0.0.1`, партия 2). COM-колбэки громкости приходят в чужом потоке COM, внутри только `PostMessage`.
 
@@ -160,12 +163,13 @@ if need_layout { layout(hwnd); }   // Win32 снаружи
 | `WM_APP_PRIVACY` | `WM_APP+7` | bg/watch.rs | микрофон/камера: поменялось, кто их держит |
 | `WM_APP_BRIGHT` | `WM_APP+8` | bg/winrt.rs | воркер: яркость прочитана или поставлена (значение в `static BRIGHTNESS`) |
 | `WM_APP_VIZ` | `WM_APP+9` | bg/watch.rs | наблюдатель: новый кадр спектра (`static SPECTRUM`); не шлётся, пока не сброшен `PENDING` |
+| `WM_APP_SYS` | `WM_APP+10` | bg/winrt.rs | воркер: снимок системы (`static SNAPSHOT`) или предупреждение о нагрузке (`static LOAD_WARN`) готово |
 | `WM_POWERBROADCAST` / `PBT_POWERSETTINGCHANGE` | из крейта | sys/power.rs | система: `GUID_ACDC_POWER_SOURCE`, `GUID_BATTERY_PERCENTAGE_REMAINING`, `GUID_VIDEO_CURRENT_MONITOR_BRIGHTNESS` (`RegisterPowerSettingNotification`) |
 | `WM_MOUSELEAVE` | `0x02A3` | система | нет в крейте, объявлен в ids.rs |
 | `WM_CLIPBOARDUPDATE` | из крейта | система | `AddClipboardFormatListener` |
 | `TaskbarCreated` | `RegisterWindowMessage` | shell.rs | Explorer перезапустился |
 
-Резерв под роадмап: `+10` events.rs. Питание и яркость ноутбука своего `WM_APP_*` не имеют: это системный `WM_POWERBROADCAST` (раздел 7).
+Резерв под роадмап: `+11` events.rs (локальный API). Питание и яркость ноутбука своего `WM_APP_*` не имеют: это системный `WM_POWERBROADCAST` (раздел 7).
 
 **Таймеры** (`SetTimer`, id в `wparam`)
 
@@ -303,6 +307,8 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 | Визуализатор музыки (сделано) | WASAPI loopback устройства вывода по умолчанию (`sys/loopback.rs`). События нет: тайм-аут 33 мс в `WaitForMultipleObjects` наблюдателя, только пока музыка играет и пилюлю видно (`viz::refresh_want` при `WM_APP_MEDIA`, смене раскрытия и полноэкрана) → `WM_APP_VIZ` | `bg/watch.rs` → UI | да, ~30 Гц, осознанное исключение (раздел 1) |
 | Прогресс трека | `GetTimelineProperties` + `TimelinePropertiesChanged`, позицию между событиями досчитываем сами от `LastUpdatedTime` | WinRT-воркер | секундный тик только перерисовывает полоску и только если играет |
 | Скриншот (сделано) | `ShellExecute("ms-screenclip:")` через `TIMER_SHOT` (250 мс после сворачивания) | UI | — |
+| Монитор системы (сделано) | События нет. Раз в секунду, только пока открыта вкладка «Система»: `Job::SysSample` в воркер (`GetSystemTimes`, `GlobalMemoryStatusEx`, `NtQuerySystemInformation`, `GetIfTable2`, `GetDiskFreeSpaceExW`, `IOCTL_DISK_PERFORMANCE`, `D3DKMTQueryStatistics`) → `WM_APP_SYS`. PDH не используем (раздел 10) | UI → `bg/winrt.rs` → UI | да, 1 Гц, только пока вкладка открыта |
+| Предупреждение о нагрузке (сделано) | `LoadWatch::tick` на секундном тике UI (два дешёвых вызова: `GetSystemTimes`, `GlobalMemoryStatusEx`), ≥90% 30 с подряд → `Job::LoadWarn` → `WM_APP_SYS` → `osd::Flash::Text` на 8 с | UI + `bg/winrt.rs` | да, 1 Гц, в том числе свёрнутым: согласованное исключение (раздел 1) |
 | Файловая полка | `IDropTarget` (приём) + `DoDragDrop` с `IDataObject` (отдача), нужен `OleInitialize` | UI | — |
 
 ---
@@ -319,7 +325,7 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 6. [~] `pill.rs`: `text`/`lead_width`/`shows_level` есть, OSD работает через `feat/osd.rs` и `TIMER_FLASH`. Бейджей (слоты, приоритеты) пока нет.
 7. [x] `media.rs` → `bg/winrt.rs` (и `privacy.rs` → `bg/watch.rs`).
 
-Разделы 2 и 5 обновлены после шагов 1–5 и 7 и после партии «яркость + батарея событиями» и после визуализатора.
+Разделы 2 и 5 обновлены после шагов 1–5 и 7 и после партии «яркость + батарея событиями» , после визуализатора и после монитора системы.
 
 ---
 
@@ -350,6 +356,8 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 | WMI для яркости только при наличии батареи, на ПК DDC/CI | DLL WMI добавляют ~3 МБ WS, на ПК WMI не нужен | Ноутбук без батареи (редкость) получит яркость только по DDC/CI |
 | Кадр визуализатора перерисовывает только свой прямоугольник (`ui/viz.rs::on_frame`: `GetDC`, маленький буфер, `BitBlt`), а не `InvalidateRect` | 30 раз в секунду перерисовывать всё окно со шрифтами и обложкой заметно по CPU | Кадр рисуется мимо `paint`; прямоугольник берётся из `State.viz_area`, который обновляет каждый `paint` |
 | Захват звука и расчёт кадров в `bg/watch.rs`, без нового потока | Лимит потоков, наблюдатель и так ждёт на `WaitForMultipleObjects` | Наблюдатель перестал быть чисто событийным: пока играет музыка, просыпается 30 раз в секунду |
+| Монитор системы без PDH: `GetSystemTimes`, `NtQuerySystemInformation`, `GetIfTable2`, `IOCTL_DISK_PERFORMANCE` (`\\.\PhysicalDriveN`, доступ 0, без админа), `D3DKMTQueryStatistics` (GPU) | Замер: счётчик «GPU Engine(*)» добавлял ~7 МБ WS / ~6 МБ приватной, даже один `PhysicalDisk(_Total)` ~5 МБ, и после `PdhCloseQuery` память не возвращалась. D3DKMT и IOCTL почти ничего не стоят | `NtQuerySystemInformation` и D3DKMT недокументированы/полудокументированы: смещения `SYSTEM_PROCESS_INFORMATION` захардкожены под x64, GPU берётся как самый занятый движок, без разбивки по процессам |
+| Предупреждение о нагрузке считается на секундном тике и в свёрнутом виде | Нужно ловить нагрузку, когда вкладка закрыта; цена: два вызова в секунду, нового таймера и потока нет | Исключение из правила «опрос только в раскрытом виде» (раздел 1) |
 | `panic = "abort"`, `strip`, LTO | Размер exe | Нет бэктрейса, только сообщение в `crash.log` |
 
 ---
