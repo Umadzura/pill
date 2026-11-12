@@ -7,6 +7,7 @@ pub mod clipboard;
 pub mod display;
 pub mod icon;
 pub mod launch;
+pub mod loopback;
 pub mod net;
 pub mod power;
 pub mod theme;
@@ -17,9 +18,4 @@ use windows::Win32::System::SystemInformation::GetLocalTime;
 pub fn local_hm() -> (u16, u16) {
     let t = unsafe { GetLocalTime() };
     (t.wHour, t.wMinute)
-}
-
-/// Секунды местного времени (для «живых» значков, которым хватает раз в секунду).
-pub fn local_second() -> u16 {
-    unsafe { GetLocalTime() }.wSecond
 }

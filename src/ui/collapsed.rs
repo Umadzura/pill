@@ -7,7 +7,7 @@ use super::paint::*;
 use crate::app::State;
 use crate::bg::winrt;
 use crate::feat::osd::Flash;
-use crate::pill::{self, DOT};
+use crate::pill::{self, DOT, EQ_W};
 
 pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
     if pill::shows_level(s) {
@@ -46,8 +46,8 @@ pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
     }
 }
 
-/// Значки слева от текста: точки микрофона/камеры и эквалайзер.
-unsafe fn draw_lead(p: &Painter, mut x: i32, mid: i32) {
+/// Значки слева от текста: точки микрофона/камеры и полоски музыки.
+unsafe fn draw_lead(p: &mut Painter, mut x: i32, mid: i32) {
     let (mic, cam) = pill::privacy_dots();
     for (on, c) in [(mic, MIC), (cam, CAM)] {
         if on {
@@ -60,20 +60,9 @@ unsafe fn draw_lead(p: &Painter, mut x: i32, mid: i32) {
         x += p.s(4);
     }
     if winrt::playing() {
-        eq_icon(p, x, mid);
-    }
-}
-
-/// Три столбика «эквалайзера». Высоты меняются раз в секунду вместе с перерисовкой часов:
-/// живо, но без отдельного таймера и опроса звука.
-unsafe fn eq_icon(p: &Painter, x: i32, mid: i32) {
-    let seed = crate::sys::local_second() as usize;
-    const H: [i32; 7] = [5, 9, 12, 7, 11, 6, 10];
-    for i in 0..3 {
-        let h = H[(seed * 3 + i * 2 + seed / 7) % H.len()];
-        let l = x + p.s(i as i32 * 5);
-        let r = RECT { left: l, top: mid + p.s(6 - h), right: l + p.s(3), bottom: mid + p.s(6) };
-        p.fill(r, 2, ACCENT);
+        // Настоящий спектр того, что играет (feat::viz), 4 столбика.
+        let r = RECT { left: x, top: mid - p.s(7), right: x + p.s(EQ_W), bottom: mid + p.s(7) };
+        p.viz(r, 4);
     }
 }
 

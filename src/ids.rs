@@ -21,6 +21,8 @@ pub const WM_APP_AUDIODEV: u32 = WM_APP + 6;
 pub const WM_APP_PRIVACY: u32 = WM_APP + 7;
 /// Воркер: прочитана яркость экрана (`bg::winrt::BRIGHTNESS`).
 pub const WM_APP_BRIGHT: u32 = WM_APP + 8;
+/// Наблюдатель: новый кадр спектра (`feat::viz::SPECTRUM`). Не шлётся, пока прошлый не нарисован.
+pub const WM_APP_VIZ: u32 = WM_APP + 9;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;

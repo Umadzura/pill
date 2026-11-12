@@ -7,7 +7,7 @@ use crate::feat::cmd::fmt_dur;
 use crate::feat::osd::{battery_short, Flash};
 
 /// Размеры значков слева от текста (логические px).
-pub const EQ_W: i32 = 13;
+pub const EQ_W: i32 = 18;
 pub const DOT: i32 = 7;
 
 pub fn time_text() -> String {

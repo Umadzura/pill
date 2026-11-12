@@ -52,6 +52,10 @@ impl Shell {
             fs_miss: 0,
         }
     }
+    /// Пилюлю сейчас видно (в полноэкранном режиме прячемся, если панель не открыта хоткеем).
+    pub fn visible(&self) -> bool {
+        !self.fullscreen || self.expanded
+    }
     /// Сбросить запомненный размер: следующий layout() обязательно переставит окно.
     pub fn invalidate_size(&mut self) {
         self.size = (0, 0);
@@ -111,6 +115,7 @@ pub unsafe fn set_expanded(hwnd: HWND, value: bool) {
             ctl::refresh();
         }
         layout(hwnd);
+        crate::feat::viz::refresh_want();
     }
 }
 
@@ -197,6 +202,7 @@ unsafe fn set_fullscreen(hwnd: HWND, value: bool) {
     });
     if changed {
         layout(hwnd);
+        crate::feat::viz::refresh_want();
     }
 }
 

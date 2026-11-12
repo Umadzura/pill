@@ -116,6 +116,8 @@ pub struct Painter<'a> {
     pub f: &'a Fonts,
     pub hits: Vec<(RECT, Hit)>,
     pub hover: Option<Hit>,
+    /// Где нарисованы полоски визуализатора в этом кадре.
+    pub viz: Option<super::viz::VizArea>,
 }
 
 impl Painter<'_> {
@@ -162,6 +164,11 @@ impl Painter<'_> {
     }
     pub fn hovered(&self, h: Hit) -> bool {
         self.hover == Some(h)
+    }
+    /// Полоски визуализатора: рисуем и запоминаем место для покадровой перерисовки.
+    pub unsafe fn viz(&mut self, r: RECT, bars: usize) {
+        super::viz::draw(self.hdc, self.dpi, r, bars);
+        self.viz = Some(super::viz::VizArea { rect: r, bars });
     }
     /// Круглая кнопка-значок.
     pub unsafe fn icon_button(&mut self, r: RECT, icon: &str, h: Hit, big: bool) {
