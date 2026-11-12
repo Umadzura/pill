@@ -1,6 +1,90 @@
-//! Командная строка: поиск программ из меню Пуск, калькулятор, разбор таймеров.
+//! Командная строка: поиск программ из меню Пуск, калькулятор, разбор таймеров, запуск выбранного.
+//! Разбор и ранжирование — чистые функции с тестами, запуск — через `sys::launch`.
 
 use std::path::{Path, PathBuf};
+
+use windows::Win32::Foundation::HWND;
+
+use crate::app::{st, State};
+use crate::input::close_panel;
+use crate::sys;
+
+/// Ярлыки, найденные при последнем открытии командной строки.
+#[derive(Default)]
+pub struct CmdState {
+    pub apps: Vec<App>,
+}
+
+/// Строка результата в командной строке.
+#[derive(Clone, PartialEq)]
+pub enum CmdRes {
+    Calc(String),
+    Timer(u64),
+    App(usize),
+    Run(String),
+    /// Уже запущенный таймер (индекс в `timers.list`): клик отменяет.
+    Active(usize),
+}
+
+pub fn results(s: &State) -> Vec<CmdRes> {
+    let q = s.input.text.trim();
+    let mut out = Vec::new();
+    if q.is_empty() {
+        out.extend((0..s.timers.list.len()).map(CmdRes::Active));
+        return out;
+    }
+    if let Some(v) = calc(q) {
+        out.push(CmdRes::Calc(fmt_num(v)));
+    }
+    if let Some(t) = parse_timer(q) {
+        out.push(CmdRes::Timer(t));
+    }
+    if !q.starts_with('>') {
+        out.extend(search(&s.cmd.apps, q, 6).into_iter().map(CmdRes::App));
+    }
+    out.push(CmdRes::Run(q.to_string()));
+    out
+}
+
+/// Выполнить строку номер `i` из текущих результатов.
+pub unsafe fn run_index(hwnd: HWND, i: usize) {
+    let res = st(|s| results(s).get(i).cloned());
+    if let Some(r) = res {
+        run(hwnd, r);
+    }
+}
+
+unsafe fn run(hwnd: HWND, res: CmdRes) {
+    match res {
+        CmdRes::Calc(v) => {
+            sys::clipboard::set_text(hwnd, &v);
+            close_panel(hwnd, true);
+        }
+        CmdRes::Timer(secs) => {
+            st(|s| {
+                s.timers.add(secs);
+                s.input.text.clear();
+                s.input.sel = 0;
+            });
+            close_panel(hwnd, true);
+        }
+        CmdRes::App(i) => {
+            let path = st(|s| s.cmd.apps.get(i).map(|a| a.path.to_string_lossy().into_owned()));
+            close_panel(hwnd, false);
+            if let Some(p) = path {
+                sys::launch::open(&p, None);
+            }
+        }
+        CmdRes::Run(line) => {
+            close_panel(hwnd, false);
+            sys::launch::run_line(&line);
+        }
+        CmdRes::Active(i) => {
+            st(|s| s.timers.cancel(i));
+            crate::shell::layout(hwnd);
+        }
+    }
+}
 
 pub struct App {
     pub name: String,

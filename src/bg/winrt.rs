@@ -12,10 +12,10 @@ use windows::Media::Control::*;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
-use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-pub const WM_APP_MEDIA: u32 = WM_APP + 1;
-pub const WM_APP_RADIO: u32 = WM_APP + 2;
+use crate::ids::{WM_APP_MEDIA, WM_APP_RADIO};
+
 const ART: u32 = 128;
 
 pub struct Art {
