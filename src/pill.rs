@@ -31,7 +31,7 @@ pub fn privacy_dots() -> (bool, bool) {
     (!u.mic.is_empty(), !u.cam.is_empty())
 }
 
-/// Текст свёрнутой пилюли: время [⏱ остаток таймера] [батарея]. Значки слева рисуются отдельно.
+/// Текст свёрнутой пилюли: время [задачи скриптов] [⏱ остаток таймера] [батарея]. Значки слева рисуются отдельно.
 pub fn text(s: &State) -> String {
     if let Some(a) = &s.timers.alarm {
         return format!("⏰  {}", a);
@@ -43,6 +43,7 @@ pub fn text(s: &State) -> String {
         None => {}
     }
     let mut parts = vec![time_text()];
+    parts.extend(s.tasks.badges());
     if let Some(left) = s.timers.nearest_left() {
         parts.push(format!("⏱ {}", fmt_dur(left)));
     }
