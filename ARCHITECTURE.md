@@ -14,7 +14,7 @@ Pill существует ради того, чтобы быть лёгким. �
 | **В простое 0% CPU.** Никаких опросов чаще 1 раза в секунду. Единственный постоянный таймер `TIMER_CLOCK` (1 с). | Ради этого всё и затевалось (Island брал 16%). | Диспетчер задач, 5 минут в простое. |
 | **Всё по событиям.** Сначала ищем системное уведомление (WM_*, COM-callback, WinRT-event, `RegNotifyChangeKeyValue`), опрос только если события нет. Опрашивать можно только пока панель раскрыта. | Опрос в свёрнутом виде съедает батарею ноутбука. | `grep SetTimer`: каждый новый таймер должен быть одноразовым или работать только в раскрытом виде. |
 | **Не больше 4 своих потоков**: UI, WinRT-воркер, наблюдатель (будущий), сеть (будущий). | Каждый поток стоит ~1 МБ стека и усложняет синхронизацию. | Новый поток добавляется только с записью в раздел 3. |
-| **Working set ≤ 30 МБ, приватная память ≤ 10 МБ.** Сейчас 23,5 / 3,4. | | Process Explorer после часа работы. |
+| **Working set ≤ 30 МБ, приватная память ≤ 10 МБ.** Сейчас 23,2 / 3,4 (после раскрытия «Управления» и смены яркости 25,1 / 3,9: dxva2). | | Process Explorer после часа работы. |
 | **Exe ≤ 1,5 МБ (сейчас 606 КБ), один файл, без ресурсов и DLL рядом.** | Portable: скопировал и запустил. | `ls target/release/pill.exe` |
 | **Перерисовка только того, что поменялось.** `InvalidateRect` зовём только если видимое изменилось (сравнение со старым значением). | GDI-перерисовка 560×340 недорогая, но 60 раз в секунду уже заметно. | |
 | **UI-поток не блокируется дольше ~50 мс.** Долгое (WinRT `.get()`, сеть, `rasdial`, WMI, DDC/CI) уходит в фоновый поток. | Иначе пилюля подвисает при наведении. | |
@@ -26,45 +26,46 @@ Pill существует ради того, чтобы быть лёгким. �
 ## 2. Карта модулей (как есть)
 
 ```
-main.rs        108 строк  вход: panic hook, мьютекс, COM, DPI, класс окна, цикл сообщений, регистрация хоткеев
-ids.rs          51        все WM_APP_*, TIMER_*, HOTKEY_*, MENU_*
-app.rs         334        State из частей, st(), Hit/Tab/Redraw, wndproc-диспетчер, on_click, on_tick
+main.rs        110 строк  вход: panic hook, мьютекс, COM, DPI, класс окна, цикл сообщений, регистрация хоткеев
+ids.rs          53        все WM_APP_*, TIMER_*, HOTKEY_*, MENU_*
+app.rs         346        State из частей, st(), Hit/Tab/Redraw, wndproc-диспетчер, on_click, on_tick
 shell.rs       277        окно: layout, раскрытие/сворачивание, полноэкран (AppBar), трей, DPI
 input.rs       217        клавиатура, поле ввода, вставка из буфера, close_panel
 pill.rs         67        модель свёрнутой пилюли: text, lead_width, shows_level (бейджей пока нет)
 
-ui/            ~730       GDI, State только читает
+ui/            ~750       GDI, State только читает
   mod.rs        103       paint(): кадр, вкладки
-  paint.rs      216       цвета, значки MDL2, Fonts, Painter, виджеты volume_row/input/hint/icon_button
-  collapsed.rs  101       свёрнутый вид
-  music.rs 112  clip.rs 59 (ROWS)  cmd.rs 50  ctl.rs 88
+  paint.rs      223       цвета, значки MDL2, Fonts, Painter, виджеты slider_row (volume_row через него)/input/hint/icon_button
+  collapsed.rs  109       свёрнутый вид (level_bar: громкость и яркость)
+  music.rs 112  clip.rs 59 (ROWS = 9)  cmd.rs 50  ctl.rs 96 (строка яркости, если BRIGHTNESS = Some)
 
-feat/          ~1050      логика функций, без GDI
+feat/          ~1070      логика функций, без GDI
   clip.rs       201       History, ClipHit, on_hit/on_update
   cmd.rs        384       бывший launcher.rs: поиск, калькулятор, CmdRes, results, run_index
-  ctl.rs        147       Ctl, Pw, CtlHit, Snapshot, CtlState, refresh, volume_at/volume_wheel
+  ctl.rs        168       Ctl, Pw, CtlHit, Snapshot, CtlState, refresh, volume_at/volume_wheel, brightness_at/brightness_wheel
   music.rs       29       MusicHit
-  osd.rs        177       Flash, Osd, on_volume, on_audio_device, battery_tick, battery_event (тест)
+  osd.rs        213       Flash (Volume/Brightness/Text), Osd (кэш батареи), on_volume, on_audio_device, on_power, battery_event (тест)
   timers.rs      77       Timers: tick/add/cancel/dismiss (тест)
 
-sys/           ~600       тонкие обёртки над Windows, без State
+sys/           ~690       тонкие обёртки над Windows, без State
   audio.rs 143 (громкость + Watch с колбэками)  autostart.rs 23  clipboard.rs 69 (read_text/set_text)
   icon.rs 47  launch.rs 84 (open, run_line, Ctrl+V, force_foreground, hidden)  net.rs 63 (VPN)
-  power.rs 45 (battery() -> Battery, lock/sleep/restart/shutdown)  theme.rs 43
+  display.rs 213 (яркость: WMI на ноутбуке, DDC/CI на ПК, struct Displays для воркера, to_pct/from_pct с тестом)
+  power.rs 80 (battery() -> Battery, register_notify/parse_notify -> PowerEvent, lock/sleep/restart/shutdown)  theme.rs 43
 
-bg/            ~540       фоновые потоки
-  winrt.rs      399       бывший media.rs: GSMTC, обложки, радио
+bg/            ~560       фоновые потоки
+  winrt.rs      423       бывший media.rs: GSMTC, обложки, радио, яркость (Displays)
   watch.rs      137       бывший privacy.rs: микрофон/камера через RegNotifyChangeKeyValue
 ```
 
-Всего ~3900 строк. Правила зависимостей:
+Всего ~4260 строк. Правила зависимостей:
 - `sys` и `bg` не знают `State`.
 - `feat` может звать слой приложения: `app::st`, `input::close_panel`/`paste`, `shell::layout`.
 - `ui` читает данные `feat` и `State`, но feat-логику не вызывает.
 - `app` знает всех и маршрутизирует.
 
 State: `{ shell, input, hits, hover, clip, cmd, ctl, timers, osd }`.
-Hit: `Tab, Input, Volume, Music(MusicHit), Clip(ClipHit), Cmd(usize), Ctl(CtlHit), Alarm`. `enum Redraw { None, Content, Layout }`.
+Hit: `Tab, Input, Volume, Brightness, Music(MusicHit), Clip(ClipHit), Cmd(usize), Ctl(CtlHit), Alarm`. `enum Redraw { None, Content, Layout }`.
 
 ---
 
@@ -92,9 +93,11 @@ Hit: `Tab, Input, Volume, Music(MusicHit), Clip(ClipHit), Cmd(usize), Ctl(CtlHit
 
 Свои потоки сейчас:
 1. UI.
-2. WinRT-воркер (`bg/winrt.rs`).
+2. WinRT-воркер (`bg/winrt.rs`): GSMTC, радио и яркость (`Job::Brightness`, `Job::SetBrightness(u8)`, в пачке выполняется только последний; результат в `static BRIGHTNESS: Mutex<Option<u8>>`, сообщение `WM_APP_BRIGHT`). `Displays` (WMI/DDC) живёт в этом потоке.
 3. Наблюдатель (`bg/watch.rs`): `WaitForMultipleObjects` по двум `RegNotifyChangeKeyValue` (микрофон, камера), шлёт `WM_APP_PRIVACY`, результат в `static IN_USE`. Тему пока не слушает.
 4. Короткоживущий: `sys/theme.rs::set_dark` на время рассылки `WM_SETTINGCHANGE` (может подвиснуть).
+
+События питания (`WM_POWERBROADCAST`) приходят в UI-поток, своего потока не требуют.
 
 Резерв: сеть (`events.rs`, `127.0.0.1`, партия 2). COM-колбэки громкости приходят в чужом потоке COM, внутри только `PostMessage`.
 
@@ -150,11 +153,13 @@ if need_layout { layout(hwnd); }   // Win32 снаружи
 | `WM_APP_VOLUME` | `WM_APP+5` | sys/audio.rs | COM-колбэк громкости (wparam = громкость×1000, lparam = 1 при mute) |
 | `WM_APP_AUDIODEV` | `WM_APP+6` | sys/audio.rs | сменилось устройство вывода |
 | `WM_APP_PRIVACY` | `WM_APP+7` | bg/watch.rs | микрофон/камера: поменялось, кто их держит |
+| `WM_APP_BRIGHT` | `WM_APP+8` | bg/winrt.rs | воркер: яркость прочитана или поставлена (значение в `static BRIGHTNESS`) |
+| `WM_POWERBROADCAST` / `PBT_POWERSETTINGCHANGE` | из крейта | sys/power.rs | система: `GUID_ACDC_POWER_SOURCE`, `GUID_BATTERY_PERCENTAGE_REMAINING`, `GUID_VIDEO_CURRENT_MONITOR_BRIGHTNESS` (`RegisterPowerSettingNotification`) |
 | `WM_MOUSELEAVE` | `0x02A3` | система | нет в крейте, объявлен в ids.rs |
 | `WM_CLIPBOARDUPDATE` | из крейта | система | `AddClipboardFormatListener` |
 | `TaskbarCreated` | `RegisterWindowMessage` | shell.rs | Explorer перезапустился |
 
-Резерв под роадмап: `+8` яркость, `+9` events.rs. Питание своего номера не имеет (см. раздел 7).
+Резерв под роадмап: `+9` events.rs. Питание и яркость ноутбука своего `WM_APP_*` не имеют: это системный `WM_POWERBROADCAST` (раздел 7).
 
 **Таймеры** (`SetTimer`, id в `wparam`)
 
@@ -164,7 +169,7 @@ if need_layout { layout(hwnd); }   // Win32 снаружи
 | 2 | `TIMER_COLLAPSE` | 350 мс, разовый | после ухода курсора |
 | 3 | `TIMER_PASTE` | 80 мс, разовый | после выбора записи буфера |
 | 4 | `TIMER_CTL` | 3000 мс, разовый | после переключения VPN |
-| 5 | `TIMER_FLASH` | разовый, длительность задаёт вызов | убрать временную надпись: громкость, зарядка, предупреждения |
+| 5 | `TIMER_FLASH` | разовый, длительность задаёт вызов | убрать временную надпись: громкость, яркость, зарядка, предупреждения |
 | 6 | `TIMER_SHOT` | 250 мс, разовый | открыть выделение области, когда панель уже свернулась |
 
 **Прочее**
@@ -285,9 +290,9 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 |---|---|---|---|
 | Полноэкран | `SHAppBarMessage` → `ABN_FULLSCREENAPP` + проверка на секундном тике | UI | нет (тик уже есть) |
 | OSD громкости (сделано) | `IAudioEndpointVolumeCallback::OnNotify` → `WM_APP_VOLUME`, смена устройства → `WM_APP_AUDIODEV` (`sys/audio.rs::Watch`) | COM-поток → UI | нет |
-| Яркость ноутбука | WMI `WmiMonitorBrightnessEvent` (асинхронный sink) | в `bg/winrt.rs` или свой | нет. **Сначала замерить RAM:** WMI может добавить мегабайты |
-| Яркость монитора ПК | DDC/CI (`dxva2`: `GetMonitorBrightness`/`SetMonitorBrightness`) | фоновый: DDC медленный, 40–100 мс | события нет; читаем при раскрытии «Управления» |
-| Зарядка/батарея (сделано иначе) | Было запланировано `WM_POWERBROADCAST`, реально `osd::battery_tick` → `GetSystemPowerStatus` на секундном `TIMER_CLOCK`, в том числе в свёрнутом виде | UI | да, раз в секунду |
+| Яркость ноутбука (сделано иначе) | Событие: `RegisterPowerSettingNotification(GUID_VIDEO_CURRENT_MONITOR_BRIGHTNESS)` → `WM_POWERBROADCAST` → `osd::on_power` (WMI-sink не нужен). Чтение и запись: WMI `ROOT\WMI` (`WmiMonitorBrightness`, `WmiSetBrightness`), подключается лениво и только если есть батарея (на ПК DLL WMI дают ~3 МБ) | события в UI, WMI в `bg/winrt.rs` | нет |
+| Яркость монитора ПК (сделано) | DDC/CI (`dxva2`: `EnumDisplayMonitors` → `GetPhysicalMonitorsFromHMONITOR` → `Get/SetMonitorBrightness`); ставим на все мониторы, читаем первый | `bg/winrt.rs`: DDC медленный, 40–100 мс | события нет; читаем при раскрытии «Управления» (`ctl::refresh` → `Job::Brightness`) |
+| Зарядка/батарея (сделано) | `RegisterPowerSettingNotification` на `GUID_ACDC_POWER_SOURCE` и `GUID_BATTERY_PERCENTAGE_REMAINING` → `WM_POWERBROADCAST` → `osd::on_power`; `GetSystemPowerStatus` читается только в событии, результат кэшируется в `Osd.battery` | UI | нет |
 | Микрофон/камера (сделано) | `RegNotifyChangeKeyValue` на `HKCU\...\CapabilityAccessManager\ConsentStore\{microphone,webcam}` (дерево) → `WM_APP_PRIVACY` | `bg/watch.rs` | нет |
 | Прогресс трека | `GetTimelineProperties` + `TimelinePropertiesChanged`, позицию между событиями досчитываем сами от `LastUpdatedTime` | WinRT-воркер | секундный тик только перерисовывает полоску и только если играет |
 | Скриншот (сделано) | `ShellExecute("ms-screenclip:")` через `TIMER_SHOT` (250 мс после сворачивания) | UI | — |
@@ -307,7 +312,7 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 6. [~] `pill.rs`: `text`/`lead_width`/`shows_level` есть, OSD работает через `feat/osd.rs` и `TIMER_FLASH`. Бейджей (слоты, приоритеты) пока нет.
 7. [x] `media.rs` → `bg/winrt.rs` (и `privacy.rs` → `bg/watch.rs`).
 
-Разделы 2 и 5 обновлены после шагов 1–5 и 7.
+Разделы 2 и 5 обновлены после шагов 1–5 и 7 и после партии «яркость + батарея событиями».
 
 ---
 
@@ -335,7 +340,7 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 | Hit-зоны записываются при отрисовке | Раскладка и клики не расходятся | Клик до первого `paint` ничего не находит (не страшно) |
 | `SetWindowRgn` для формы | Просто и дёшево | Угловатые края (в планах) |
 | Один WinRT-воркер на всё WinRT | Блокирующие `.get()` не трогают UI, а MTA нужен для событий | Медленная операция (обложка) задерживает остальные задачи. Пока терпимо |
-| Батарея по секундному тику, а не `WM_POWERBROADCAST` | Тик уже есть, `GetSystemPowerStatus` дёшев, нужны и проценты, и пороги 20%/10% | Опрос в свёрнутом виде, формально против правила 1. Если станет заметно, перейти на `RegisterPowerSettingNotification` |
+| WMI для яркости только при наличии батареи, на ПК DDC/CI | DLL WMI добавляют ~3 МБ WS, на ПК WMI не нужен | Ноутбук без батареи (редкость) получит яркость только по DDC/CI |
 | `panic = "abort"`, `strip`, LTO | Размер exe | Нет бэктрейса, только сообщение в `crash.log` |
 
 ---
