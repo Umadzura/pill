@@ -4,6 +4,7 @@
 pub mod audio;
 pub mod autostart;
 pub mod clipboard;
+pub mod display;
 pub mod icon;
 pub mod launch;
 pub mod net;

@@ -40,6 +40,8 @@ pub enum Hit {
     Input,
     /// Полоска громкости (есть и в «Музыке», и в «Управлении»).
     Volume,
+    /// Полоска яркости в «Управлении» (только если есть чем управлять).
+    Brightness,
     Music(MusicHit),
     Clip(ClipHit),
     /// Строка результата командной строки.
@@ -126,6 +128,7 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
             Redraw::None
         }
         Hit::Volume => ctl::volume_at(rect, x),
+        Hit::Brightness => ctl::brightness_at(rect, x),
         Hit::Music(h) => music::on_hit(h, rect, x),
         Hit::Clip(h) => clip::on_hit(hwnd, h),
         Hit::Cmd(i) => {
@@ -165,7 +168,9 @@ unsafe fn on_tab(hwnd: HWND, t: Tab) -> Redraw {
 unsafe fn on_wheel(hwnd: HWND, delta: i32) {
     let notches = delta / 120;
     let notches = if notches == 0 { delta.signum() } else { notches };
-    let r = match st(|s| s.shell.tab) {
+    let (tab, hover) = st(|s| (s.shell.tab, s.hover));
+    let r = match tab {
+        Tab::Controls if hover == Some(Hit::Brightness) => ctl::brightness_wheel(notches),
         Tab::Music | Tab::Controls => ctl::volume_wheel(notches),
         Tab::Clipboard => {
             st(|s| input::scroll_clip(s, notches));
@@ -181,7 +186,6 @@ unsafe fn on_tick(hwnd: HWND) {
     if beep {
         let _ = MessageBeep(MB_ICONEXCLAMATION);
     }
-    osd::battery_tick(hwnd);
     shell::fullscreen_tick(hwnd);
     // Перерисовываем только если что-то видимое поменялось.
     let (changed, expanded, live) =
@@ -299,7 +303,15 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         }
         // Значок ♪ и точки микрофона/камеры меняют ширину пилюли.
         WM_APP_MEDIA | WM_APP_PRIVACY => shell::layout(hwnd),
-        WM_APP_RADIO => {
+        WM_POWERBROADCAST => {
+            if wparam.0 as u32 == PBT_POWERSETTINGCHANGE {
+                if let Some(ev) = sys::power::parse_notify(lparam) {
+                    osd::on_power(hwnd, ev);
+                }
+            }
+            return LRESULT(1);
+        }
+        WM_APP_RADIO | WM_APP_BRIGHT => {
             let _ = InvalidateRect(hwnd, None, false);
         }
         WM_APP_VOLUME => osd::on_volume(hwnd, wparam.0 as f32 / 1000.0, lparam.0 != 0),

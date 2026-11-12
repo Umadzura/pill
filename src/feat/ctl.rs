@@ -1,4 +1,4 @@
-//! «Управление»: плитки-переключатели, громкость, питание с подтверждением.
+//! «Управление»: плитки-переключатели, громкость, яркость, питание с подтверждением.
 
 use std::time::{Duration, Instant};
 
@@ -6,7 +6,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::SetTimer;
 
 use crate::app::{st, Redraw};
-use crate::bg::winrt::{self, Job, Kind, RADIOS};
+use crate::bg::winrt::{self, Job, Kind, BRIGHTNESS, RADIOS};
 use crate::ids::{TIMER_CTL, TIMER_SHOT};
 use crate::input::close_panel;
 use crate::sys;
@@ -66,11 +66,32 @@ impl CtlState {
     }
 }
 
-/// Перечитать плитки. Радио читает WinRT-воркер и сам пришлёт WM_APP_RADIO.
+/// Перечитать плитки. Радио и яркость читает воркер и сам пришлёт WM_APP_RADIO / WM_APP_BRIGHT.
 pub fn refresh() {
     let snap = Snapshot { volume: sys::audio::volume(), dark: sys::theme::dark(), vpn: sys::net::vpn() };
     st(|s| s.ctl.snap = snap);
     winrt::send(Job::Radios);
+    winrt::send(Job::Brightness);
+}
+
+/// Поставить яркость: сразу показываем новое значение, а медленный DDC/WMI делает воркер.
+fn set_brightness(pct: i32) -> Redraw {
+    let pct = pct.clamp(0, 100) as u8;
+    *BRIGHTNESS.lock().unwrap() = Some(pct);
+    winrt::send(Job::SetBrightness(pct));
+    Redraw::Content
+}
+
+/// Клик по полоске яркости.
+pub fn brightness_at(rect: RECT, x: i32) -> Redraw {
+    let w = (rect.right - rect.left).max(1);
+    set_brightness(((x - rect.left) * 100 + w / 2) / w)
+}
+
+/// Колесо над полоской яркости: ±5% за щелчок.
+pub fn brightness_wheel(notches: i32) -> Redraw {
+    let Some(cur) = *BRIGHTNESS.lock().unwrap() else { return Redraw::None };
+    set_brightness(cur as i32 + notches * 5)
 }
 
 /// Клик по полоске громкости (общая для «Музыки» и «Управления»).

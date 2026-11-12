@@ -19,6 +19,8 @@ pub const WM_APP_VOLUME: u32 = WM_APP + 5;
 pub const WM_APP_AUDIODEV: u32 = WM_APP + 6;
 /// Наблюдатель: поменялось, кто держит микрофон или камеру.
 pub const WM_APP_PRIVACY: u32 = WM_APP + 7;
+/// Воркер: прочитана яркость экрана (`bg::winrt::BRIGHTNESS`).
+pub const WM_APP_BRIGHT: u32 = WM_APP + 8;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
