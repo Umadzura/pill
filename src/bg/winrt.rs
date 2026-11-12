@@ -79,6 +79,9 @@ pub struct Radios {
 
 pub static RADIOS: Mutex<Radios> = Mutex::new(Radios { wifi: None, bt: None });
 
+/// VPN-профиль: (имя, подключён). None — профилей нет. Читает воркер: pbk-файлы и RAS API не для UI-потока.
+pub static VPN: Mutex<Option<(String, bool)>> = Mutex::new(None);
+
 /// Яркость 0..100 последнего прочитанного экрана. None — управлять нечем (или ещё не читали).
 pub static BRIGHTNESS: Mutex<Option<u8>> = Mutex::new(None);
 
@@ -99,6 +102,12 @@ pub enum Job {
     Prev,
     Radios,
     SetRadio(Kind, bool),
+    /// Перечитать VPN (при раскрытии и через 3 с после переключения).
+    Vpn,
+    /// Подключить/отключить VPN (rasdial).
+    ToggleVpn,
+    /// Разослать окнам «тема сменилась» (может подвиснуть на зависших окнах).
+    ThemeBroadcast,
     /// Перечитать яркость (при раскрытии «Управления»).
     Brightness,
     /// Поставить яркость 0..100. В пачке выполняется только последняя.
@@ -286,6 +295,12 @@ fn worker(rx: mpsc::Receiver<Job>) {
                     read_radios(&mut radios);
                     notify(WM_APP_RADIO);
                 }
+                Job::Vpn => {
+                    *VPN.lock().unwrap() = crate::sys::net::vpn();
+                    notify(WM_APP_RADIO);
+                }
+                Job::ToggleVpn => crate::sys::net::toggle_vpn(),
+                Job::ThemeBroadcast => crate::sys::theme::broadcast(),
                 Job::Brightness => {
                     *BRIGHTNESS.lock().unwrap() = displays.get();
                     notify(WM_APP_BRIGHT);

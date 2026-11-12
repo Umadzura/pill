@@ -207,7 +207,9 @@ fn sys_sampling_tick() {
 }
 
 unsafe fn on_tick(hwnd: HWND) {
-    let (beep, confirm_gone, load) = st(|s| (s.timers.tick(Instant::now()), s.ctl.tick(), s.load.tick()));
+    // Два дешёвых счётчика для предупреждения о нагрузке — вне st().
+    let (cpu, mem) = (sys::sysinfo::cpu_times(), sys::sysinfo::memory());
+    let (beep, confirm_gone, load) = st(|s| (s.timers.tick(Instant::now()), s.ctl.tick(), s.load.tick(cpu, mem)));
     if beep {
         let _ = MessageBeep(MB_ICONEXCLAMATION);
     }

@@ -13,7 +13,8 @@ use crate::shell::EXPANDED_W;
 pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     let radios = *winrt::RADIOS.lock().unwrap();
     let snap = &s.ctl.snap;
-    let vpn_label = match &snap.vpn {
+    let vpn = winrt::VPN.lock().unwrap().clone();
+    let vpn_label = match &vpn {
         Some((name, _)) => name.clone(),
         None => "VPN".to_string(),
     };
@@ -21,7 +22,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     let tiles: [(Ctl, &str, String, Option<bool>); 6] = [
         (Ctl::Wifi, I_WIFI, "Wi-Fi".into(), radios.wifi),
         (Ctl::Bt, I_BT, "Bluetooth".into(), radios.bt),
-        (Ctl::Vpn, I_VPN, vpn_label, snap.vpn.as_ref().map(|v| v.1)),
+        (Ctl::Vpn, I_VPN, vpn_label, vpn.as_ref().map(|v| v.1)),
         (Ctl::Dark, I_THEME, "Тёмная тема".into(), snap.dark),
         (Ctl::Mute, if muted == Some(true) { I_MUTE } else { I_VOL }, "Звук".into(), muted.map(|m| !m)),
         // Не переключатель, а кнопка: всегда «выключена».
