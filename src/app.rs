@@ -65,6 +65,8 @@ pub struct State {
     pub input: input::Input,
     pub hits: Vec<(RECT, Hit)>,
     pub hover: Option<Hit>,
+    /// Где сейчас нарисованы полоски визуализатора (None — не видны).
+    pub viz_area: Option<ui::viz::VizArea>,
     pub clip: clip::History,
     pub cmd: cmd::CmdState,
     pub ctl: ctl::CtlState,
@@ -87,6 +89,7 @@ pub unsafe fn init_state() {
         input: input::Input::default(),
         hits: Vec::new(),
         hover: None,
+        viz_area: None,
         clip: clip::History::load(),
         cmd: cmd::CmdState::default(),
         ctl: ctl::CtlState::default(),
@@ -302,7 +305,13 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
             }
         }
         // Значок ♪ и точки микрофона/камеры меняют ширину пилюли.
-        WM_APP_MEDIA | WM_APP_PRIVACY => shell::layout(hwnd),
+        WM_APP_MEDIA => {
+            shell::layout(hwnd);
+            // Заиграло или встало на паузу: включить/выключить захват звука.
+            crate::feat::viz::refresh_want();
+        }
+        WM_APP_PRIVACY => shell::layout(hwnd),
+        WM_APP_VIZ => ui::viz::on_frame(hwnd),
         WM_POWERBROADCAST => {
             if wparam.0 as u32 == PBT_POWERSETTINGCHANGE {
                 if let Some(ev) = sys::power::parse_notify(lparam) {

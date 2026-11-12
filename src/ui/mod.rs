@@ -7,6 +7,7 @@ mod collapsed;
 mod ctl;
 mod music;
 mod paint;
+pub mod viz;
 
 use windows::core::w;
 use windows::Win32::Foundation::*;
@@ -57,7 +58,7 @@ pub unsafe fn paint(hwnd: HWND) {
 
     st(|s| {
         let fonts = Fonts::new(s.shell.dpi);
-        let mut p = Painter { hdc: mem, dpi: s.shell.dpi, f: &fonts, hits: Vec::new(), hover: s.hover };
+        let mut p = Painter { hdc: mem, dpi: s.shell.dpi, f: &fonts, hits: Vec::new(), hover: s.hover, viz: None };
         if !s.shell.expanded {
             collapsed::draw(&mut p, s, rc);
         } else {
@@ -91,6 +92,7 @@ pub unsafe fn paint(hwnd: HWND) {
             }
         }
         s.hits = std::mem::take(&mut p.hits);
+        s.viz_area = p.viz;
         SelectObject(mem, old_font);
         drop(fonts);
     });

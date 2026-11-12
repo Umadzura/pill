@@ -8,3 +8,4 @@ pub mod ctl;
 pub mod music;
 pub mod osd;
 pub mod timers;
+pub mod viz;

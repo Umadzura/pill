@@ -89,6 +89,9 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     p.fill(play, 52, rgb(44, 44, 54));
     p.icon_button(play, if playing { I_PAUSE } else { I_PLAY }, Hit::Music(MusicHit::Play), true);
     p.icon_button(p.r(278, 146, 322, 190), I_NEXT, Hit::Music(MusicHit::Next), false);
+    if playing {
+        p.viz(p.r(344, 148, EXPANDED_W - 24, 188), crate::feat::viz::BANDS);
+    }
 
     // Время трека и полоска перемотки.
     if let Some((cur, dur)) = progress {
