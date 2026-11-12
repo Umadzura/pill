@@ -1,7 +1,7 @@
 # Архитектура Pill
 
 Читать перед тем, как добавлять функцию. Здесь описано, как всё устроено, какие правила нельзя нарушать и куда класть новый код.
-Состояние на v0.2 (2026-11-11). Если код разошёлся с этим файлом, правится файл.
+Состояние на 2026-11-12 (после переезда на модули). Если код разошёлся с этим файлом, правится файл.
 
 ---
 
@@ -14,8 +14,8 @@ Pill существует ради того, чтобы быть лёгким. �
 | **В простое 0% CPU.** Никаких опросов чаще 1 раза в секунду. Единственный постоянный таймер `TIMER_CLOCK` (1 с). | Ради этого всё и затевалось (Island брал 16%). | Диспетчер задач, 5 минут в простое. |
 | **Всё по событиям.** Сначала ищем системное уведомление (WM_*, COM-callback, WinRT-event, `RegNotifyChangeKeyValue`), опрос только если события нет. Опрашивать можно только пока панель раскрыта. | Опрос в свёрнутом виде съедает батарею ноутбука. | `grep SetTimer`: каждый новый таймер должен быть одноразовым или работать только в раскрытом виде. |
 | **Не больше 4 своих потоков**: UI, WinRT-воркер, наблюдатель (будущий), сеть (будущий). | Каждый поток стоит ~1 МБ стека и усложняет синхронизацию. | Новый поток добавляется только с записью в раздел 3. |
-| **Working set ≤ 30 МБ, приватная память ≤ 10 МБ.** Сейчас 21 / 3. | | Process Explorer после часа работы. |
-| **Exe ≤ 1,5 МБ, один файл, без ресурсов и DLL рядом.** | Portable: скопировал и запустил. | `ls target/release/pill.exe` |
+| **Working set ≤ 30 МБ, приватная память ≤ 10 МБ.** Сейчас 23,5 / 3,4. | | Process Explorer после часа работы. |
+| **Exe ≤ 1,5 МБ (сейчас 606 КБ), один файл, без ресурсов и DLL рядом.** | Portable: скопировал и запустил. | `ls target/release/pill.exe` |
 | **Перерисовка только того, что поменялось.** `InvalidateRect` зовём только если видимое изменилось (сравнение со старым значением). | GDI-перерисовка 560×340 недорогая, но 60 раз в секунду уже заметно. | |
 | **UI-поток не блокируется дольше ~50 мс.** Долгое (WinRT `.get()`, сеть, `rasdial`, WMI, DDC/CI) уходит в фоновый поток. | Иначе пилюля подвисает при наведении. | |
 
@@ -26,15 +26,45 @@ Pill существует ради того, чтобы быть лёгким. �
 ## 2. Карта модулей (как есть)
 
 ```
-main.rs      1000 строк  точка входа, State, wndproc, мышь/клава, хоткеи, таймеры, трей, полноэкран, раскладка окна
-ui.rs         550        GDI: шрифты, цвета, Painter, отрисовка всех вкладок, запись hit-зон
-media.rs      300        фоновый WinRT-поток: GSMTC (музыка), обложка, Wi-Fi/Bluetooth (Radios)
-clip.rs       230        история буфера (данные + файл), чтение/запись буфера Windows
-launcher.rs   300        чистая логика: поиск ярлыков, калькулятор, разбор таймеров, форматирование
-sys.rs        310        тонкие обёртки над Windows: громкость, тема, VPN, питание, автозапуск, запуск, Ctrl+V, иконка
+main.rs        108 строк  вход: panic hook, мьютекс, COM, DPI, класс окна, цикл сообщений, регистрация хоткеев
+ids.rs          51        все WM_APP_*, TIMER_*, HOTKEY_*, MENU_*
+app.rs         334        State из частей, st(), Hit/Tab/Redraw, wndproc-диспетчер, on_click, on_tick
+shell.rs       277        окно: layout, раскрытие/сворачивание, полноэкран (AppBar), трей, DPI
+input.rs       217        клавиатура, поле ввода, вставка из буфера, close_panel
+pill.rs         67        модель свёрнутой пилюли: text, lead_width, shows_level (бейджей пока нет)
+
+ui/            ~730       GDI, State только читает
+  mod.rs        103       paint(): кадр, вкладки
+  paint.rs      216       цвета, значки MDL2, Fonts, Painter, виджеты volume_row/input/hint/icon_button
+  collapsed.rs  101       свёрнутый вид
+  music.rs 112  clip.rs 59 (ROWS)  cmd.rs 50  ctl.rs 88
+
+feat/          ~1050      логика функций, без GDI
+  clip.rs       201       History, ClipHit, on_hit/on_update
+  cmd.rs        384       бывший launcher.rs: поиск, калькулятор, CmdRes, results, run_index
+  ctl.rs        147       Ctl, Pw, CtlHit, Snapshot, CtlState, refresh, volume_at/volume_wheel
+  music.rs       29       MusicHit
+  osd.rs        177       Flash, Osd, on_volume, on_audio_device, battery_tick, battery_event (тест)
+  timers.rs      77       Timers: tick/add/cancel/dismiss (тест)
+
+sys/           ~600       тонкие обёртки над Windows, без State
+  audio.rs 143 (громкость + Watch с колбэками)  autostart.rs 23  clipboard.rs 69 (read_text/set_text)
+  icon.rs 47  launch.rs 84 (open, run_line, Ctrl+V, force_foreground, hidden)  net.rs 63 (VPN)
+  power.rs 45 (battery() -> Battery, lock/sleep/restart/shutdown)  theme.rs 43
+
+bg/            ~540       фоновые потоки
+  winrt.rs      399       бывший media.rs: GSMTC, обложки, радио
+  watch.rs      137       бывший privacy.rs: микрофон/камера через RegNotifyChangeKeyValue
 ```
 
-Зависимости: `main` знает всех. `ui` читает `State` (через `crate::*`) и статики `media`. `media`, `clip`, `launcher`, `sys` друг о друге не знают и `State` не трогают. Это свойство надо сохранить: **модули функций не зависят от `State` и друг от друга**, склеивает их только слой приложения.
+Всего ~3900 строк. Правила зависимостей:
+- `sys` и `bg` не знают `State`.
+- `feat` может звать слой приложения: `app::st`, `input::close_panel`/`paste`, `shell::layout`.
+- `ui` читает данные `feat` и `State`, но feat-логику не вызывает.
+- `app` знает всех и маршрутизирует.
+
+State: `{ shell, input, hits, hover, clip, cmd, ctl, timers, osd }`.
+Hit: `Tab, Input, Volume, Music(MusicHit), Clip(ClipHit), Cmd(usize), Ctl(CtlHit), Alarm`. `enum Redraw { None, Content, Layout }`.
 
 ---
 
@@ -55,14 +85,18 @@ sys.rs        310        тонкие обёртки над Windows: громк�
 
 1. **`State` живёт только в UI-потоке** (`thread_local`). Другие потоки его не видят и не трогают.
 2. **Фоновый поток → UI**: кладёт результат в свой `static Mutex<...>` и шлёт `PostMessageW(hwnd, WM_APP_..., 0, 0)`. Никогда `SendMessage`: он заблокирует воркер, а при обратном вызове получится дедлок.
-3. **UI → фоновый поток**: `media::send(Job::...)`. Задачи в очереди схлопываются (одинаковые подряд выполняются один раз), поэтому `Job` должен быть `PartialEq` и идемпотентным.
+3. **UI → фоновый поток**: `winrt::send(Job::...)`. Задачи в очереди схлопываются (одинаковые подряд выполняются один раз), поэтому `Job` должен быть `PartialEq` и идемпотентным.
 4. **Мьютексы держим коротко**: залочил, скопировал или прочитал, отпустил. В `paint` лок `MEDIA` отпускается (`drop(m)`) до рисования кнопок. Никогда не держать два лока сразу.
-5. **COM-callback'и** (например будущий `IAudioEndpointVolumeCallback`) приходят в чужом потоке. Внутри только `PostMessage`, никакой логики.
+5. **COM-callback'и** (`IAudioEndpointVolumeCallback` и смена устройства, `sys/audio.rs`) приходят в чужом потоке. Внутри только `PostMessage`, никакой логики.
 6. `panic = "abort"`: паника в любом потоке убивает процесс (след остаётся в `crash.log`). Поэтому в фоновых потоках не используем `unwrap()` на результатах Windows API, только `.ok()` / `let _ =`. `lock().unwrap()` допустим: отравления не бывает, процесс уже умер бы.
 
-Будущие потоки (резерв):
-- **Наблюдатель** (`watch.rs`): один поток на `WaitForMultipleObjects` по всем ядерным событиям сразу: `RegNotifyChangeKeyValue` (микрофон/камера, тема), и т. п. Один поток на все реестровые наблюдения вместо потока на каждое.
-- **Сеть** (`events.rs`): слушатель `127.0.0.1` для событий от скриптов (из раздела «Потом» в ROADMAP).
+Свои потоки сейчас:
+1. UI.
+2. WinRT-воркер (`bg/winrt.rs`).
+3. Наблюдатель (`bg/watch.rs`): `WaitForMultipleObjects` по двум `RegNotifyChangeKeyValue` (микрофон, камера), шлёт `WM_APP_PRIVACY`, результат в `static IN_USE`. Тему пока не слушает.
+4. Короткоживущий: `sys/theme.rs::set_dark` на время рассылки `WM_SETTINGCHANGE` (может подвиснуть).
+
+Резерв: сеть (`events.rs`, `127.0.0.1`, партия 2). COM-колбэки громкости приходят в чужом потоке COM, внутри только `PostMessage`.
 
 ---
 
@@ -103,19 +137,24 @@ if need_layout { layout(hwnd); }   // Win32 снаружи
 
 ## 5. Реестр номеров и ресурсов
 
-Все «магические» номера в одном месте. Добавил новый, впиши сюда. После рефакторинга (раздел 7) они переедут в `src/ids.rs`.
+Все «магические» номера в одном месте. Добавил новый, впиши сюда. Источник правды: `src/ids.rs`.
 
 **Сообщения окна**
 
 | Константа | Значение | Где | Кто шлёт |
 |---|---|---|---|
-| `WM_APP_MEDIA` | `WM_APP+1` | media.rs | воркер: трек/статус изменились |
-| `WM_APP_RADIO` | `WM_APP+2` | media.rs | воркер: Wi-Fi/BT прочитаны |
-| `WM_APP_TRAY` | `WM_APP+3` | main.rs | иконка трея |
-| `WM_APP_BAR` | `WM_APP+4` | main.rs | Explorer: `ABN_FULLSCREENAPP` |
-| `TaskbarCreated` | `RegisterWindowMessage` | main.rs | Explorer перезапустился |
+| `WM_APP_MEDIA` | `WM_APP+1` | bg/winrt.rs | воркер: трек/статус изменились |
+| `WM_APP_RADIO` | `WM_APP+2` | bg/winrt.rs | воркер: Wi-Fi/BT прочитаны |
+| `WM_APP_TRAY` | `WM_APP+3` | shell.rs | иконка трея |
+| `WM_APP_BAR` | `WM_APP+4` | shell.rs | Explorer: `ABN_FULLSCREENAPP` |
+| `WM_APP_VOLUME` | `WM_APP+5` | sys/audio.rs | COM-колбэк громкости (wparam = громкость×1000, lparam = 1 при mute) |
+| `WM_APP_AUDIODEV` | `WM_APP+6` | sys/audio.rs | сменилось устройство вывода |
+| `WM_APP_PRIVACY` | `WM_APP+7` | bg/watch.rs | микрофон/камера: поменялось, кто их держит |
+| `WM_MOUSELEAVE` | `0x02A3` | система | нет в крейте, объявлен в ids.rs |
+| `WM_CLIPBOARDUPDATE` | из крейта | система | `AddClipboardFormatListener` |
+| `TaskbarCreated` | `RegisterWindowMessage` | shell.rs | Explorer перезапустился |
 
-Резерв под роадмап: `+5` громкость (OSD), `+6` яркость, `+7` микрофон/камера, `+8` питание (если не через `WM_POWERBROADCAST`), `+9` events.rs.
+Резерв под роадмап: `+8` яркость, `+9` events.rs. Питание своего номера не имеет (см. раздел 7).
 
 **Таймеры** (`SetTimer`, id в `wparam`)
 
@@ -125,8 +164,8 @@ if need_layout { layout(hwnd); }   // Win32 снаружи
 | 2 | `TIMER_COLLAPSE` | 350 мс, разовый | после ухода курсора |
 | 3 | `TIMER_PASTE` | 80 мс, разовый | после выбора записи буфера |
 | 4 | `TIMER_CTL` | 3000 мс, разовый | после переключения VPN |
-
-Резерв: 5 `TIMER_OSD` (скрыть всплывашку громкости/яркости, ~1500 мс, разовый).
+| 5 | `TIMER_FLASH` | разовый, длительность задаёт вызов | убрать временную надпись: громкость, зарядка, предупреждения |
+| 6 | `TIMER_SHOT` | 250 мс, разовый | открыть выделение области, когда панель уже свернулась |
 
 **Прочее**
 
@@ -137,7 +176,9 @@ if need_layout { layout(hwnd); }   // Win32 снаружи
 | Мьютекс | `Local\PillSingleInstance` |
 | Класс окна | `PillWindow` |
 | Реестр (пишем) | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` → `Pill`; `...\Themes\Personalize` (`AppsUseLightTheme`, `SystemUsesLightTheme`) |
+| Реестр (читаем) | `HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\{microphone,webcam}` (+ `NonPackaged`), наблюдает `bg/watch.rs` |
 | Файлы | `%APPDATA%\Pill\clipboard.txt` (история), `%APPDATA%\Pill\crash.log` (последняя паника) |
+| Только читаем | `%APPDATA%` и `%ProgramData%` `\Microsoft\Network\Connections\Pbk\rasphone.pbk` (VPN-профили), меню Пуск (ярлыки) |
 
 ---
 
@@ -148,7 +189,7 @@ if need_layout { layout(hwnd); }   // Win32 снаружи
 - **Размеры в логических px** при 96 DPI, через `scale(v, dpi)` или `p.s(v)`. Прямых пикселей в коде нет.
 - **`DrawTextW` с пустой строкой падает.** Проверка в `Painter::text`, не убирать. Весь текст рисуется только через `Painter::text`.
 - **GDI-объекты**: создал, используй и удали в той же функции (`DeleteObject`). Утечка GDI-хендлов через сутки приводит к чёрной пилюле. Шрифты пока создаются на каждый `paint` (дёшево); если станет заметно, кэшировать в `State` с пересозданием на `WM_DPICHANGED`.
-- **Логика без Win32 живёт в отдельных функциях и покрыта тестами** (`launcher::calc`, `parse_timer`, `clip::escape`). Новый парсер или ранжирование пишется так же: чистая функция плюс `#[test]`.
+- **Логика без Win32 живёт в отдельных функциях и покрыта тестами** (`feat::cmd::calc`, `parse_timer`, `clip::escape`). Новый парсер или ранжирование пишется так же: чистая функция плюс `#[test]`.
 - **Внешние программы** (`cmd`, `shutdown`, `rasdial`) запускаем через `sys::hidden` / `sys::open`. Долг из CHANGES.md: перевести на полный путь `%SystemRoot%\System32\...`.
 - Комментарии и строки интерфейса по-русски. Комментарий объясняет «почему», а не «что».
 
@@ -158,7 +199,7 @@ if need_layout { layout(hwnd); }   // Win32 снаружи
 
 ### Проблема
 
-Каждая функция из ROADMAP (OSD громкости, яркость, зарядка, микрофон/камера, мини-обложка, скриншот, файловая полка) сейчас потребует правок в пяти местах: поля в `State`, варианты в `Hit`, ветки в `on_click`/`wndproc`, отрисовка в `ui.rs`, текст в `collapsed_text`. `main.rs` уже 1000 строк, после партии 1 станет 2000, и тогда и начнётся «ахуеть».
+(Исторически, до переезда.) Каждая функция из ROADMAP (OSD громкости, яркость, зарядка, микрофон/камера, мини-обложка, скриншот, файловая полка) сейчас потребует правок в пяти местах: поля в `State`, варианты в `Hit`, ветки в `on_click`/`wndproc`, отрисовка в `ui.rs`, текст в `collapsed_text`. `main.rs` уже 1000 строк, после партии 1 станет 2000, и тогда и начнётся «ахуеть».
 
 ### Цель
 
@@ -243,13 +284,13 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 | Функция | Источник события | Поток | Опрос? |
 |---|---|---|---|
 | Полноэкран | `SHAppBarMessage` → `ABN_FULLSCREENAPP` + проверка на секундном тике | UI | нет (тик уже есть) |
-| OSD громкости | `IAudioEndpointVolumeCallback::OnNotify` → `PostMessage(WM_APP_VOLUME)` | COM-поток → UI | нет |
+| OSD громкости (сделано) | `IAudioEndpointVolumeCallback::OnNotify` → `WM_APP_VOLUME`, смена устройства → `WM_APP_AUDIODEV` (`sys/audio.rs::Watch`) | COM-поток → UI | нет |
 | Яркость ноутбука | WMI `WmiMonitorBrightnessEvent` (асинхронный sink) | в `bg/winrt.rs` или свой | нет. **Сначала замерить RAM:** WMI может добавить мегабайты |
 | Яркость монитора ПК | DDC/CI (`dxva2`: `GetMonitorBrightness`/`SetMonitorBrightness`) | фоновый: DDC медленный, 40–100 мс | события нет; читаем при раскрытии «Управления» |
-| Зарядка/батарея | `RegisterPowerSettingNotification` (`GUID_ACDC_POWER_SOURCE`, `GUID_BATTERY_PERCENTAGE_REMAINING`) → `WM_POWERBROADCAST` | UI | нет |
-| Микрофон/камера | `RegNotifyChangeKeyValue` на `HKCU\...\CapabilityAccessManager\ConsentStore\{microphone,webcam}` (дерево) | `bg/watch.rs` | нет |
+| Зарядка/батарея (сделано иначе) | Было запланировано `WM_POWERBROADCAST`, реально `osd::battery_tick` → `GetSystemPowerStatus` на секундном `TIMER_CLOCK`, в том числе в свёрнутом виде | UI | да, раз в секунду |
+| Микрофон/камера (сделано) | `RegNotifyChangeKeyValue` на `HKCU\...\CapabilityAccessManager\ConsentStore\{microphone,webcam}` (дерево) → `WM_APP_PRIVACY` | `bg/watch.rs` | нет |
 | Прогресс трека | `GetTimelineProperties` + `TimelinePropertiesChanged`, позицию между событиями досчитываем сами от `LastUpdatedTime` | WinRT-воркер | секундный тик только перерисовывает полоску и только если играет |
-| Скриншот | `ShellExecute("ms-screenclip:")` | UI | — |
+| Скриншот (сделано) | `ShellExecute("ms-screenclip:")` через `TIMER_SHOT` (250 мс после сворачивания) | UI | — |
 | Файловая полка | `IDropTarget` (приём) + `DoDragDrop` с `IDataObject` (отдача), нужен `OleInitialize` | UI | — |
 
 ---
@@ -258,15 +299,15 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 
 Каждый шаг — отдельный коммит, после каждого `cargo build --release` проходит и поведение не меняется. Делаем **до партии 1**, иначе потом переносить в два раза больше.
 
-1. `ids.rs`: вынести все константы номеров (WM_APP из `media.rs` тоже).
-2. `sys.rs` → `sys/` по файлам. Чисто механически, только перенос.
-3. `ui.rs` → `ui/mod.rs` + `ui/paint.rs` + по файлу на вкладку.
-4. `shell.rs` (layout, раскрытие, полноэкран, трей) и `input.rs` (клавиатура) из `main.rs`. Дождаться, пока доделается полноэкранный режим, чтобы не мешать.
-5. Разбить `State` на части, а `Hit` на вложенные enum'ы. `on_click` становится диспетчером. Самый большой шаг, делать отдельно.
-6. `pill.rs`: бейджи вместо `collapsed_text`, заготовка OSD. С этого места начинается партия 1.
-7. `media.rs` → `bg/winrt.rs`.
+1. [x] `ids.rs`: вынести все константы номеров (WM_APP из `media.rs` тоже).
+2. [x] `sys.rs` → `sys/` по файлам.
+3. [x] `ui.rs` → `ui/mod.rs` + `ui/paint.rs` + по файлу на вкладку.
+4. [x] `shell.rs` (layout, раскрытие, полноэкран, трей) и `input.rs` (клавиатура) из `main.rs`.
+5. [x] Разбить `State` на части, а `Hit` на вложенные enum'ы. `on_click` стал диспетчером.
+6. [~] `pill.rs`: `text`/`lead_width`/`shows_level` есть, OSD работает через `feat/osd.rs` и `TIMER_FLASH`. Бейджей (слоты, приоритеты) пока нет.
+7. [x] `media.rs` → `bg/winrt.rs` (и `privacy.rs` → `bg/watch.rs`).
 
-После шага 5 обновить разделы 2 и 5 этого файла.
+Разделы 2 и 5 обновлены после шагов 1–5 и 7.
 
 ---
 
@@ -294,6 +335,7 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 | Hit-зоны записываются при отрисовке | Раскладка и клики не расходятся | Клик до первого `paint` ничего не находит (не страшно) |
 | `SetWindowRgn` для формы | Просто и дёшево | Угловатые края (в планах) |
 | Один WinRT-воркер на всё WinRT | Блокирующие `.get()` не трогают UI, а MTA нужен для событий | Медленная операция (обложка) задерживает остальные задачи. Пока терпимо |
+| Батарея по секундному тику, а не `WM_POWERBROADCAST` | Тик уже есть, `GetSystemPowerStatus` дёшев, нужны и проценты, и пороги 20%/10% | Опрос в свёрнутом виде, формально против правила 1. Если станет заметно, перейти на `RegisterPowerSettingNotification` |
 | `panic = "abort"`, `strip`, LTO | Размер exe | Нет бэктрейса, только сообщение в `crash.log` |
 
 ---
