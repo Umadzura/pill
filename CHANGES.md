@@ -116,3 +116,28 @@ taskkill /IM pill.exe /F
 - `sys/theme.rs::set_dark` создаёт короткоживущий поток: вместе с UI, воркером и наблюдателем это четыре.
 - `sys::net::toggle_vpn` и `ctl::refresh` (чтение pbk-файлов, `RasEnumConnections`) идут в UI-потоке.
 - Бейджей в `pill.rs` нет (шаг 6 плана выполнен частично).
+
+---
+
+# Яркость и батарея событиями (коммит 5885703, 2026-11-12)
+
+## Что добавлено
+- `sys/display.rs`: яркость. Ноутбук: WMI `ROOT\WMI` (`WmiMonitorBrightness`, `WmiMonitorBrightnessMethods.WmiSetBrightness`), подключается лениво и только при наличии батареи (на ПК DLL WMI добавляли ~3 МБ WS). ПК: DDC/CI через dxva2, ставится на все мониторы, читается первый. `to_pct`/`from_pct` с тестом.
+- `bg/winrt.rs`: `Job::Brightness`, `Job::SetBrightness(u8)` (в пачке выполняется последний), `static BRIGHTNESS`, `WM_APP_BRIGHT = WM_APP+8`.
+- `sys/power.rs`: `register_notify` (`RegisterPowerSettingNotification` на питание, процент батареи и яркость), `parse_notify` -> `PowerEvent`. `app.rs`: `WM_POWERBROADCAST` -> `osd::on_power`.
+- `feat/osd.rs`: батарея больше не опрашивается секундным тиком, процент кэшируется из событий. `Flash::Brightness`: OSD яркости в свёрнутой пилюле, первое событие после подписки только запоминается.
+- `feat/ctl.rs`: `brightness_at`, `brightness_wheel` (±5%), `Hit::Brightness`. Колесо над полоской яркости меняет яркость, иначе громкость.
+- UI: `Painter::slider_row` (общий ползунок), строка яркости видна только если `BRIGHTNESS = Some`, `collapsed::level_bar` со значком.
+- `shell::EXPANDED_H` 340 -> 370, `ui::clip::ROWS` стало 9. В `Cargo.toml` фичи `Win32_Devices_Display`, `Win32_System_Rpc`, `Win32_System_SystemServices`, `Win32_System_Wmi`.
+
+## Проверено
+- На ПК с DDC/CI монитором: ползунок показал 80%, колесо +5% -> 85%, -5% -> 80% (скриншоты).
+- `cargo test`: 9 тестов проходят, сборка без предупреждений.
+- Замеры (ПК): WS 23,2 МБ / приватная 3,4 до раскрытия; 25,1 / 3,9 после раскрытия «Управления» и смены яркости. Своих потоков по-прежнему 3 (UI, winrt, watch).
+
+## Не проверено
+- Ноутбук: WMI-чтение и запись, OSD яркости от клавиш, события батареи (зарядка, пороги 20%/10%). Проверить на ноутбуке.
+
+## Расхождения с правилами
+- Закрыто: батарея в свёрнутом виде больше не опрашивается секундным тиком.
+- Остаются прежние: поток `sys/theme.rs::set_dark`, VPN и чтение pbk в UI-потоке, нет бейджей в `pill.rs`.
