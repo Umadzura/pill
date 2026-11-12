@@ -87,3 +87,32 @@ taskkill /IM pill.exe /F
 %USERPROFILE%\.cargo\bin\cargo build --release
 ```
 Результат: `target\release\pill.exe`. Debug-сборка не линкуется (кириллица в пути), отлаживать релизом.
+
+---
+
+# Переезд на модули (коммит 4301452, 2026-11-12)
+
+Поведение не менялось. `main.rs` (1227 строк) разобран по модулям.
+
+## Структура `src/`
+- `main.rs` (108): вход. `ids.rs`: все `WM_APP_*`, `TIMER_*`, `HOTKEY_*`, `MENU_*`. `app.rs`: `State` из частей, `st()`, диспетчер `wndproc`, `on_click` возвращает `Redraw`. `shell.rs`: layout, раскрытие, полноэкран, трей, DPI. `input.rs`: клавиатура, поле ввода, вставка. `pill.rs`: модель свёрнутой пилюли.
+- `sys/`: audio, autostart, clipboard, icon, launch, net, power, theme.
+- `bg/`: `winrt.rs` (бывший `media.rs`), `watch.rs` (бывший `privacy.rs`).
+- `feat/`: clip, cmd (бывший `launcher.rs`), ctl, music, osd, timers.
+- `ui/`: mod, paint, collapsed, music, clip, cmd, ctl.
+- `State { shell, input, hits, hover, clip, cmd, ctl, timers, osd }`, `Hit` с вложенными `MusicHit`, `ClipHit`, `CtlHit`.
+
+## Проверено
+- Сборка release без предупреждений, `cargo test`: 8 тестов проходят.
+- Запуск, свёрнутая пилюля, раскрытие наведением, все четыре вкладки кликаются и рисуются (скриншоты), музыка подхватилась.
+- Замеры: exe 606 208 байт, working set 23,5 МБ, приватная 3,4 МБ, CPU ~0 после 6 с.
+
+## Не проверено
+- Дольше 6 с в простое, пятиминутный замер CPU.
+- Фоновые функции после переноса вручную (вставка в другое окно, переключатели, кнопки питания, микрофон/камера, OSD громкости, полноэкран).
+
+## Расхождения с правилами (найдены при сверке, код не менялся)
+- Батарея проверяется `GetSystemPowerStatus` на секундном тике, в том числе в свёрнутом виде (в плане был `WM_POWERBROADCAST`).
+- `sys/theme.rs::set_dark` создаёт короткоживущий поток: вместе с UI, воркером и наблюдателем это четыре.
+- `sys::net::toggle_vpn` и `ctl::refresh` (чтение pbk-файлов, `RasEnumConnections`) идут в UI-потоке.
+- Бейджей в `pill.rs` нет (шаг 6 плана выполнен частично).
