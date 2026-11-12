@@ -10,6 +10,7 @@ pub mod launch;
 pub mod loopback;
 pub mod net;
 pub mod power;
+pub mod sysinfo;
 pub mod theme;
 
 use windows::Win32::System::SystemInformation::GetLocalTime;

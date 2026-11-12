@@ -7,5 +7,6 @@ pub mod cmd;
 pub mod ctl;
 pub mod music;
 pub mod osd;
+pub mod sysmon;
 pub mod timers;
 pub mod viz;

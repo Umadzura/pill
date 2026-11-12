@@ -7,6 +7,7 @@ mod collapsed;
 mod ctl;
 mod music;
 mod paint;
+mod sys;
 pub mod viz;
 
 use windows::core::w;
@@ -33,7 +34,7 @@ pub unsafe fn measure(hwnd: HWND, dpi: u32, text: &str) -> i32 {
 
 /// Прямоугольник вкладки i в шапке развёрнутой панели.
 fn tab_rect(i: usize, dpi: u32) -> RECT {
-    let w = scale(110, dpi);
+    let w = scale(88, dpi);
     let left = scale(20, dpi) + i as i32 * (w + scale(6, dpi));
     RECT { left, top: scale(14, dpi), right: left + w, bottom: scale(44, dpi) }
 }
@@ -88,6 +89,7 @@ pub unsafe fn paint(hwnd: HWND) {
                     Tab::Clipboard => clip::draw(&mut p, s, w),
                     Tab::Commands => cmd::draw(&mut p, s, w),
                     Tab::Controls => ctl::draw(&mut p, s, w, h),
+                    Tab::System => sys::draw(&mut p, s, w),
                 }
             }
         }
