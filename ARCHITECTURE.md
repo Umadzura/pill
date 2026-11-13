@@ -14,8 +14,8 @@ Pill существует ради того, чтобы быть лёгким. �
 | **В простое 0% CPU.** Никаких опросов чаще 1 раза в секунду. Единственный постоянный таймер `TIMER_CLOCK` (1 с). **Короткоживущий `TIMER_ANIM` (15 мс) живёт только ~200 мс во время раскрытия или сворачивания и сразу гасится `KillTimer`; в простое его нет.** **Исключение (согласовано с пользователем): визуализатор музыки**, ~30 кадров/с, только пока играет музыка и пилюлю видно (не в полноэкранном режиме). Замер: играет, свёрнуто, 5 с — 0,016 с CPU (~0,3% ядра, на границе точности счётчика 15,6 мс); простой — 0,000 с. **Второе исключение (согласовано): `s.load.tick()` на секундном тике, в том числе свёрнутым** (`GetSystemTimes` + `GlobalMemoryStatusEx`, предупреждение о нагрузке). Монитор системы (снимки процессов, GPU, диск, сеть) снимается только пока открыта вкладка «Система». **Третье исключение (ЖДЁТ СОГЛАСОВАНИЯ с пользователем): опрос чужих уведомлений `GetNotificationsAsync` раз в 2 с (`Job::Notifs` с секундного тика через раз), в том числе свёрнутым, пока пилюлю видно (не в полноэкранном режиме); пока нет доступа (`notifs::OFF`), не шлётся.** Замер: простой 60 с, свёрнуто — 47 мс CPU (~0,08% ядра; 78 мс до перехода на слоёное окно, 250 мс до кэша прочитанных по id), до этого 0,000 с. Других исключений нет. | Ради этого всё и затевалось (Island брал 16%). | Диспетчер задач, 5 минут в простое. |
 | **Всё по событиям.** Сначала ищем системное уведомление (WM_*, COM-callback, WinRT-event, `RegNotifyChangeKeyValue`), опрос только если события нет. Опрашивать можно только пока панель раскрыта. | Опрос в свёрнутом виде съедает батарею ноутбука. | `grep SetTimer`: каждый новый таймер должен быть одноразовым, короткоживущим (как `TIMER_ANIM`) или работать только в раскрытом виде. |
 | **Не больше 4 своих потоков**: UI, WinRT-воркер, наблюдатель, локальный API (все четыре заняты, пятого нет). | Каждый поток стоит ~1 МБ стека и усложняет синхронизацию. | Новый поток добавляется только с записью в раздел 3. |
-| **Working set ≤ 30 МБ, приватная память ≤ 10 МБ.** Сейчас после настроек рабочий набор около 26 МБ (приватная не замерялась); раньше 26,5 / 4,8 (простой 30 с, свёрнуто, после ушек и анимации; 26,8 / 4,9 после слоёного окна, после открытия вкладок; до него 25,3 / 4,3 в простое, замер после агентов и уведомлений; вкладка «События» открыта 28,5–28,8 / 5,2–5,4; до них 20,9 / 3,2; раньше 22,6 / 3,6; после раскрытия «Управления» и смены яркости 25,1 / 3,9: dxva2; во время игры музыки с визуализатором 26,1 / 4,5; вкладка «Система» открыта 23,2 / 4,2). **PDH не использовать** (см. раздел 10). | | Process Explorer после часа работы. |
-| **Exe ≤ 1,5 МБ (сейчас 796 672 байта), один файл, без ресурсов и DLL рядом.** | Portable: скопировал и запустил. | `ls target/release/pill.exe` |
+| **Working set ≤ 30 МБ, приватная память ≤ 10 МБ.** Сейчас после этапов 1 и 3 рабочий набор около 25,7 МБ (приватная не замерялась); раньше 26,5 / 4,8 (простой 30 с, свёрнуто, после ушек и анимации; 26,8 / 4,9 после слоёного окна, после открытия вкладок; до него 25,3 / 4,3 в простое, замер после агентов и уведомлений; вкладка «События» открыта 28,5–28,8 / 5,2–5,4; до них 20,9 / 3,2; раньше 22,6 / 3,6; после раскрытия «Управления» и смены яркости 25,1 / 3,9: dxva2; во время игры музыки с визуализатором 26,1 / 4,5; вкладка «Система» открыта 23,2 / 4,2). **PDH не использовать** (см. раздел 10). | | Process Explorer после часа работы. |
+| **Exe ≤ 1,5 МБ (сейчас 801 280 байт), один файл, без ресурсов и DLL рядом.** | Portable: скопировал и запустил. | `ls target/release/pill.exe` |
 | **Перерисовка только того, что поменялось.** `InvalidateRect` зовём только если видимое изменилось (сравнение со старым значением). | Кадр раскрытой панели (буфер ~3,8 МБ на 200%) недорогой, но 60 раз в секунду уже заметно. | |
 | **UI-поток не блокируется дольше ~50 мс.** Долгое (WinRT `.get()`, сеть, `rasdial`, WMI, DDC/CI) уходит в фоновый поток. | Иначе пилюля подвисает при наведении. | |
 
@@ -28,37 +28,38 @@ Pill существует ради того, чтобы быть лёгким. �
 ```
 main.rs        111 строк  вход: panic hook, мьютекс, COM, DPI, класс окна (WS_EX_LAYERED), цикл сообщений, регистрация хоткеев
 ids.rs          71        все WM_APP_*, TIMER_*, HOTKEY_*, MENU_*
-app.rs         495        State из частей (в том числе `peek`, `settings`), st(), Hit/Tab/Redraw, wndproc-диспетчер, on_click, on_tick (счётчики нагрузки читает вне st(); сигнал таймера только при `settings.sound`; `bg::api::expire` отпускает хуки), on_notifs (карточка), on_mouse_move/leave (над карточкой панель не раскрывается, `collapse_ms` из настроек), sys_sampling_tick
-shell.rs       402        окно: три вида (`MODE_COLLAPSED/PEEK/EXPANDED`, `mode(s)`), layout (после SetWindowPos сразу ui::render; размер карточки `feat::peek::W` × `Peek::height()`), смена вида с анимацией (Anim, place, on_anim_timer, TIMER_ANIM), полноэкран (AppBar), трей (`tray_menu`: автозапуск, настройки, выход), DPI, форма (TOP_MARGIN, BOTTOM_R_*, EAR = 9: окно шире тела на 2×EAR), sys_page
+app.rs         496        State из частей (в том числе `peek`, `settings`), st(), Hit/Tab/Redraw, wndproc-диспетчер, on_click, on_tick (счётчики нагрузки читает вне st(); сигнал таймера только при `settings.sound`; `bg::api::expire` отпускает хуки), on_notifs (карточка), on_mouse_move/leave (над карточкой панель не раскрывается, `collapse_ms` из настроек), sys_sampling_tick
+shell.rs       406        окно: три вида (`MODE_COLLAPSED/PEEK/EXPANDED`, `mode(s)`), layout (после SetWindowPos сразу ui::render; размер карточки `feat::peek::W` × `Peek::height()`), смена вида с анимацией (Anim, place, on_anim_timer, TIMER_ANIM), полноэкран (AppBar), трей (`tray_menu`: автозапуск, настройки, выход), DPI, форма (TOP_MARGIN, BOTTOM_R_*, EAR = 9: окно шире тела на 2×EAR), sys_page
 input.rs       217        клавиатура, поле ввода, вставка из буфера, close_panel
-pill.rs        248        модель свёрнутой пилюли: `Facts` (всё, от чего зависит вид) -> чистая `assemble(Facts) -> View { lead: Vec<Lead>, text, tone: Tone, level, viz, plain }`; `Lead` = Mic | Cam | Art | Mascot { count } с `width()`; `View::left_width/right_width`, `DOT_GAP`; `base(s)` (факты из State без чужих мьютексов, на нём `text`) и `view(s)` (+ IN_USE и MEDIA, каждый лок отдельно); `shows_level`, `lead_width`, `mini_art`, `time_text` (3 теста)
+pill.rs        276        модель свёрнутой пилюли: `Facts` (всё, от чего зависит вид; в том числе `task_bar`, `unread`, `busy_app`) -> чистая `assemble(Facts) -> View { lead: Vec<Lead>, text, tone: Tone, level, viz, plain, task_bar: Option<u8>, unread: usize }`; `Lead` = Mic | Cam | Art | Mascot { count } с `width()`; `View::left_width/right_width` (справа ещё счётчик: `UNREAD_GAP` + `UNREAD_W`), `DOT_GAP`; `view(s)` (факты из State, затем по очереди IN_USE, INBOX, MEDIA, каждый лок отдельно), `text(s)` = `view(s).text`; `shows_level`, `lead_width`, `mini_art`, `time_text` (4 теста, в том числе `stage1_extras`)
 
-ui/            ~1500       GDI для текста + свой растеризатор, State только читает
+ui/            ~1630       GDI для текста + свой растеризатор, State только читает
   mod.rs        161       paint() (WM_PAINT: BeginPaint/EndPaint + render), render(): кадр в Surface (вид MODE_PEEK рисует `peek::draw`; во время анимации раскрытая панель в полной раскладке, по центру, обрезана размером окна), вкладки (TABS = 5, «Система» — группа Controls + System с переключателем subtabs, SUB_H = 30)
   surface.rs    279       Surface: постоянный 32-бит DIB + memory DC (thread_local UI-потока, пересоздаётся при смене размера), present() = UpdateLayeredWindowIndirect (ULW_ALPHA, prcDirty); Canvas: fill_round, round_off, clear, finish(rad_px, ear) (непрозрачность, вырез ушек и нижних углов, премультипликация)
   paint.rs      282       палитра тёмной iOS, R_TILE/R_ROW/R_PILL, face() (Segoe UI Variable Text, если есть SegUIVar.ttf), значки MDL2, Fonts, Painter (cv: Canvas, oy: сдвиг вниз, ox: сдвиг вправо на ухо, off() сдвигает по обеим осям, art(): обложка со сглаженными углами), виджеты slider_row (volume_row через него)/input/hint/icon_button
-  collapsed.rs  124       свёрнутый вид по `pill::View` (цвет текста из `Tone`; level_bar: громкость и яркость; draw_left идёт по `View::lead`: точки, мини-обложка, маскот; 4 столбика визуализатора справа от текста)
+  collapsed.rs  140       свёрнутый вид по `pill::View` (цвет текста из `Tone`; level_bar: громкость и яркость; draw_left идёт по `View::lead`: точки, мини-обложка, маскот; 4 столбика визуализатора справа от текста; синий счётчик пропущенных уведомлений справа от текста; `progress(p, rc, task)` рисует полоску задачи скрипта вместо прогресса трека)
   viz.rs         50       VizArea, draw() через Canvas, on_frame(): обновляет только прямоугольник полосок в постоянном буфере (present(Some(rect)))
-  music.rs  81  clip.rs 59 (ROWS = 9)  cmd.rs 50  ctl.rs 97 (строка яркости, если BRIGHTNESS = Some)
-  sys.rs        111       вкладка «Система»: 4 плитки, график ЦП 60 с, системный диск, топ-5 приложений; WARN при ≥85%
+  music.rs  82 (обложка 148 px, спектр на всю ширину под перемоткой y 248..288, громкость y 300)  clip.rs 59 (ROWS = 9)  cmd.rs 50
+  ctl.rs    129       «Управление»: плитки 3×2 (`TILE_H` 52, значок слева, название и состояние словами), строка яркости, если BRIGHTNESS = Some; питание четырьмя круглыми кнопками 34 px справа, слева батарея, под курсором название кнопки, при подтверждении «…: нажми ещё раз» красным
+  sys.rs        114       вкладка «Монитор»: карточки 2×2 (144×96) с историей за минуту ступенчатой линией (`spark`), строка диска под ними, топ-5 приложений в правой колонке; WARN при ≥85%. Отдельного графика ЦП нет
   mascot.rs     116       маскот агента: привидение 9×8 из прямоугольников, цвет тела по хешу имени, лицо по состоянию; «кадр» берётся из `State.notif_flip`, своего таймера нет
   peek.rs        49       карточка из чёлки: значок с буквой программы, заголовок, текст, кнопки «Отклонить»/«Разрешить» (если `answerable`), `Hit::Peek`
   feed.rs       117       вкладка «События»: «Агенты» (маскот вместо точки, имя, состояние, последний запрос, возраст, крестик) и «Уведомления» (программа, заголовок, текст, возраст, крестик)
 
 feat/          ~3000      логика функций, без GDI
-  api.rs        411       локальный API: handle(buf) -> (Reply, Option<Event>), expected_len, parse_form, url_decode, Tasks (apply/expire/badges), static QUEUE, on_events; эндпоинты /hook и /agent, Event::Agent; on_events превращает `agents::Notice` в карточки (`peek::show/resolve`) и отпускает хуки (`bg::api::answer`) (5 тестов)
+  api.rs        416       локальный API: handle(buf) -> (Reply, Option<Event>), expected_len, parse_form, url_decode, Tasks (apply/expire/badges/bar: прогресс задачи для полоски), static QUEUE, on_events; эндпоинты /hook и /agent, Event::Agent; on_events превращает `agents::Notice` в карточки (`peek::show/resolve`) и отпускает хуки (`bg::api::answer`) (5 тестов)
   agents.rs     429       агенты: AgentState (Work/Ask/Wait/Done/Gone), Update (`answerable`: хук ждёт решения), Notice (Ask/Done/Resolved), Agents (apply/expire/badges/set_state/attention), from_hook (JSON хука Claude Code -> событие), json_strings (свой разбор строковых полей верхнего уровня, терпит обрыв), one_line, fmt_age (4 теста)
-  notifs.rs     120       чужие уведомления: Notif, Inbox (update/forget), static INBOX, static OFF (AtomicBool: доступа нет), flash_text, age, PEEK_MS = 5000 (2 теста)
+  notifs.rs     135       чужие уведомления: Notif, Inbox (update/forget; `unread` растёт в `update` на число незнакомых id, первое чтение не считается; сбрасывается в `app::on_tab` и `shell::set_expanded` на «Событиях»), static INBOX, static OFF (AtomicBool: доступа нет), flash_text, age, PEEK_MS = 5000 (3 теста)
   clip.rs       201       History, ClipHit, on_hit/on_update
   cmd.rs        384       бывший launcher.rs: поиск, калькулятор, CmdRes, results, run_index
   ctl.rs        173       Ctl, Pw, CtlHit, Snapshot, CtlState, refresh, volume_at/volume_wheel, brightness_at/brightness_wheel
   music.rs       29       MusicHit
   osd.rs        213       Flash (Volume/Brightness/Text), Osd (кэш батареи), on_volume, on_audio_device, on_power, battery_event (тест)
   timers.rs      77       Timers: tick/add/cancel/dismiss (тест)
-  peek.rs       117       карточка из чёлки: Peek, PeekKind (Notif/Ask{id, answerable}/Done), PeekHit (Allow/Deny/Dismiss), show/hide/resolve/on_hit, W = 420, height() 86 или 128 с кнопками; `TIMER_PEEK`. В «просто точке» show ничего не рисует и отпускает ждущий хук без решения
+  peek.rs       119       карточка из чёлки: Peek, PeekKind (Notif/Ask{id, answerable}/Done), PeekHit (Allow/Deny/Dismiss), show/hide/resolve/on_hit, W = 420, height() 86 или 128 с кнопками; `TIMER_PEEK`. В «просто точке» show ничего не рисует и отпускает ждущий хук без решения, после отказа от карточки зовёт layout (ширина чёлки меняется из-за счётчика)
   settings.rs   122       настройки: Settings { collapse_ms (зажат 100..5000), dot_mode, sound, extra }, parse/serialize (чистые, 2 теста), load/save; файл `%APPDATA%\Pill\settings.txt`
   viz.rs        259       DSP без Win32: FFT 1024, окно Ханна, 24 полосы 40 Гц–16 кГц, group(); static SPECTRUM, WANT/WAKE/PENDING (4 теста)
-  sysmon.rs     480       монитор системы: cpu_pct, parse_processes (смещения SYSTEM_PROCESS_INFORMATION x64), apps() (сложение по имени), top_by_cpu/top_by_ram, gpu_busy, Snapshot + static SNAPSHOT, Sampler (живёт в winrt-воркере, пока вкладка открыта), WarnProbe, LoadWatch (≥90% 30 с подряд -> Warn; за 2 с до порога Probe; после предупреждения молчит до 20 с спокойствия) + static LOAD_WARN, fmt_bytes/fmt_rate (6 тестов)
+  sysmon.rs     501       монитор системы: cpu_pct, parse_processes (смещения SYSTEM_PROCESS_INFORMATION x64), apps() (сложение по имени), top_by_cpu/top_by_ram, gpu_busy, Snapshot (+ `ram_hist`, `gpu_hist`, `push_hist`) + static SNAPSHOT, Sampler (живёт в winrt-воркере, пока вкладка открыта), WarnProbe, LoadWatch (≥90% 30 с подряд -> Warn; за 2 с до порога Probe; после предупреждения молчит до 20 с спокойствия) + static LOAD_WARN, fmt_bytes/fmt_rate (6 тестов)
 
 sys/           ~1090       тонкие обёртки над Windows, без State
   audio.rs 143 (громкость + Watch с колбэками)  autostart.rs 23  clipboard.rs 69 (read_text/set_text)
@@ -75,7 +76,7 @@ bg/            ~870       фоновые потоки
   watch.rs      258       бывший privacy.rs: микрофон/камера (RegNotifyChangeKeyValue) и захват звука для визуализатора
 ```
 
-Всего ~8060 строк. Правила зависимостей:
+Всего ~8340 строк. Правила зависимостей:
 - `sys` и `bg` не знают `State`.
 - `feat` может звать слой приложения: `app::st`, `input::close_panel`/`paste`, `shell::layout`.
 - `ui` читает данные `feat` и `State`, но feat-логику не вызывает.
@@ -305,10 +306,11 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 
 - **Модель (сделана, `pill.rs`)**: функции отдают факты (`Facts`), чистая `assemble` раскладывает их в `View` по трём слотам. Слотов-объектов с приоритетом нет: приоритет только у центра.
   ```
-  [ левый слот: Lead ]   [ центр: text + Tone ]   [ правый слот: viz ]
-   Mic · Cam · Art · Mascot   время · задачи · ⏱ · батарея   4 столбика
+  [ левый слот: Lead ]   [ центр: text + Tone ]   [ правый слот: viz, счётчик ]
+   Mic · Cam · Art · Mascot   [программа] время · задачи · ⏱ · батарея   4 столбика · (N)
   ```
-  Порядок значков слева фиксирован: микрофон, камера, обложка (только пока играет и обложка есть), маскот агента (с числом, если агентов больше одного). Справа спектр, пока играет музыка. Ширина = сумма `Lead::width()` + `DOT_GAP` после точек.
+  Порядок значков слева фиксирован: микрофон, камера, обложка (только пока играет и обложка есть), маскот агента (с числом, если агентов больше одного). Справа спектр, пока играет музыка, и синий счётчик пропущенных чужих уведомлений (`View.unread`, пока больше 0; `UNREAD_GAP` + `UNREAD_W`, «9+» от 10). Ширина = сумма `Lead::width()` + `DOT_GAP` после точек.
+  Имя программы, державшей микрофон или камеру (`Facts.busy_app`, до 16 символов), пишется в центре перед временем. Полоска задачи скрипта (`View.task_bar` = `Tasks::bar()`) рисуется вместо полоски прогресса трека (`collapsed::progress`). Счётчик растёт на новые уведомления и обнуляется при открытии «Событий». Всё это только в обычном виде: при тревоге и `Flash::Text` `task_bar` и `unread` пустые (тест `stage1_extras`). Выключение микрофона кликом по свёрнутой пилюле не сделано: наведение сразу раскрывает панель.
 - **Приоритет центра** (сверху важнее): тревога таймера (`Tone::Accent`) -> временная надпись `Flash::Text` (Accent или Warn) -> полоска уровня `Flash::Volume/Brightness` -> обычный вид. Пока центр занят первыми тремя, значки и спектр не показываются.
 - **OSD (временный режим)** перекрывает обычный вид на ~1,5 с: «громкость 40% ▬▬▬▭▭», «яркость», «зарядка подключена», «батарея 10%». В `State` одно поле `osd: Option<Osd { kind, value, until }>` и одноразовый `TIMER_OSD`. Новое событие перезаписывает старое, таймер перезапускается.
 - Наведение мышью всегда раскрывает панель, поверх всего.
@@ -352,7 +354,7 @@ enum Redraw { None, Content /* InvalidateRect */, Layout /* layout() */ }
 6. [x] `pill.rs`: `Facts` -> `assemble` -> `View` (слоты, приоритет центра), OSD работает через `feat/osd.rs` и `TIMER_FLASH`. 36 тестов.
 7. [x] `media.rs` → `bg/winrt.rs` (и `privacy.rs` → `bg/watch.rs`).
 
-Разделы 2 и 5 обновлены после шагов 1–5 и 7 и после партии «яркость + батарея событиями» , после визуализатора, монитора системы, локального API, агентов, уведомлений слоёного окна, ушек, анимации раскрытия, карточки из чёлки, маскотов и настроек (кусок 0.1 из PLAN.md).
+Разделы 2 и 5 обновлены после шагов 1–5 и 7 и после партии «яркость + батарея событиями» , после визуализатора, монитора системы, локального API, агентов, уведомлений слоёного окна, ушек, анимации раскрытия, карточки из чёлки, маскотов и настроек (кусок 0.1 из PLAN.md), этапов 1 и 3 (свёрнутая пилюля: счётчик, полоска задачи, имя программы; перерисовка «Музыки», «Управления», «Монитора»). Реестр номеров (раздел 5) не менялся: новых `WM_APP_*`, таймеров, хоткеев и файлов нет.
 
 ---
 
