@@ -53,6 +53,14 @@ impl Peek {
 /// Показать карточку. ms — через сколько спрятать (None — держать, пока не ответят).
 /// Просьбу о разрешении уведомление не перебивает.
 pub unsafe fn show(hwnd: HWND, peek: Peek, ms: Option<u32>) {
+    if st(|s| s.settings.dot_mode) {
+        // «Просто точка»: карточку не показываем, о событии говорит маскот в свёрнутой чёлке.
+        // Ждущий хук отпускаем сразу: Claude Code спросит в своём окне.
+        if let PeekKind::Ask { id, answerable: true } = &peek.kind {
+            crate::bg::api::answer(id, None);
+        }
+        return;
+    }
     let shown = st(|s| {
         let busy = s.peek.as_ref().is_some_and(|p| p.answerable());
         if busy && !matches!(peek.kind, PeekKind::Ask { .. }) {

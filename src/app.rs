@@ -99,6 +99,8 @@ pub struct State {
     pub notif_flip: bool,
     /// Карточка из чёлки (уведомление, просьба агента), если показана.
     pub peek: Option<Peek>,
+    /// Настройки из `%APPDATA%\Pill\settings.txt`.
+    pub settings: crate::feat::settings::Settings,
 }
 
 thread_local! {
@@ -128,6 +130,7 @@ pub unsafe fn init_state() {
         sys_sampling: false,
         notif_flip: false,
         peek: None,
+        settings: crate::feat::settings::Settings::load(),
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(s));
 }
@@ -292,7 +295,7 @@ unsafe fn on_tick(hwnd: HWND) {
     for id in crate::bg::api::expire() {
         peek::resolve(hwnd, &id);
     }
-    if beep {
+    if beep && st(|s| s.settings.sound) {
         let _ = MessageBeep(MB_ICONEXCLAMATION);
     }
     match load {
@@ -359,7 +362,7 @@ unsafe fn on_mouse_leave(hwnd: HWND) {
     }
     // Пока печатаешь, панель не прячется от ухода курсора.
     if !active {
-        SetTimer(hwnd, TIMER_COLLAPSE, COLLAPSE_DELAY_MS, None);
+        SetTimer(hwnd, TIMER_COLLAPSE, st(|s| s.settings.collapse_ms), None);
     }
     let _ = InvalidateRect(hwnd, None, false);
 }
