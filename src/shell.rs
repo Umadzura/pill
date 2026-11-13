@@ -211,6 +211,10 @@ pub unsafe fn set_expanded(hwnd: HWND, value: bool) {
     if changed {
         if value {
             ctl::refresh();
+            // Раскрыли прямо на «Событиях»: пропущенные уведомления считаются увиденными.
+            if st(|s| s.shell.tab == Tab::Feed) {
+                crate::feat::notifs::INBOX.lock().unwrap().unread = 0;
+            }
         }
         layout(hwnd);
         crate::feat::viz::refresh_want();

@@ -59,6 +59,8 @@ pub unsafe fn show(hwnd: HWND, peek: Peek, ms: Option<u32>) {
         if let PeekKind::Ask { id, answerable: true } = &peek.kind {
             crate::bg::api::answer(id, None);
         }
+        // Ширина свёрнутой чёлки могла поменяться (счётчик пропущенных).
+        layout(hwnd);
         return;
     }
     let shown = st(|s| {

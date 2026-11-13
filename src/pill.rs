@@ -59,6 +59,10 @@ pub struct View {
     pub viz: bool,
     /// Обычный вид: можно рисовать полоску прогресса трека.
     pub plain: bool,
+    /// Прогресс задачи скрипта, 0..=100: тонкая полоска по низу (важнее прогресса трека).
+    pub task_bar: Option<u8>,
+    /// Сколько чужих уведомлений пришло, пока «События» не открывали: синий счётчик справа от текста.
+    pub unread: usize,
 }
 
 impl View {
@@ -68,16 +72,17 @@ impl View {
         self.lead.iter().map(|l| l.width()).sum::<i32>() + if dots { DOT_GAP } else { 0 }
     }
     pub fn right_width(&self) -> i32 {
-        if self.viz {
-            EQ_W + 10
-        } else {
-            0
-        }
+        (if self.unread > 0 { UNREAD_GAP + UNREAD_W } else { 0 }) + if self.viz { EQ_W + 10 } else { 0 }
     }
 }
 
 /// Зазор между точками микрофона/камеры и следующим значком.
 pub const DOT_GAP: i32 = 4;
+/// Счётчик пропущенных уведомлений: ширина кружка и отступ от текста.
+pub const UNREAD_W: i32 = 18;
+pub const UNREAD_GAP: i32 = 8;
+/// Имя программы у точки микрофона/камеры не длиннее стольких символов.
+const BUSY_APP_MAX: usize = 16;
 
 /// Всё, от чего зависит свёрнутый вид. Собирается из `State` и статиков, без Win32.
 #[derive(Default)]
@@ -92,6 +97,12 @@ pub struct Facts {
     pub battery: Option<String>,
     pub mic: bool,
     pub cam: bool,
+    /// Кто держит микрофон (или камеру, если микрофон свободен).
+    pub busy_app: Option<String>,
+    /// Прогресс первой задачи скрипта, у которой он есть.
+    pub task_bar: Option<u8>,
+    /// Пропущенные чужие уведомления.
+    pub unread: usize,
     /// Есть обложка играющего трека.
     pub art: bool,
     pub playing: bool,
@@ -100,7 +111,7 @@ pub struct Facts {
 }
 
 pub fn assemble(f: Facts) -> View {
-    let quiet = View { lead: Vec::new(), text: String::new(), tone: Tone::Plain, level: false, viz: false, plain: false };
+    let quiet = View { lead: Vec::new(), text: String::new(), tone: Tone::Plain, level: false, viz: false, plain: false, task_bar: None, unread: 0 };
     if let Some(a) = f.alarm {
         return View { text: format!("⏰  {}", a), tone: Tone::Accent, ..quiet };
     }
@@ -109,7 +120,12 @@ pub fn assemble(f: Facts) -> View {
         Some(Flash::Volume(..) | Flash::Brightness(_)) => return View { level: true, ..quiet },
         None => {}
     }
-    let mut parts = vec![f.time];
+    let mut parts = Vec::new();
+    // Рядом с точкой микрофона/камеры пишем, кто их держит.
+    if f.mic || f.cam {
+        parts.extend(f.busy_app.map(|a| a.chars().take(BUSY_APP_MAX).collect::<String>()).filter(|a| !a.is_empty()));
+    }
+    parts.push(f.time);
     parts.extend(f.tasks);
     if let Some(left) = f.timer_left {
         parts.push(format!("⏱ {}", fmt_dur(left)));
@@ -128,7 +144,7 @@ pub fn assemble(f: Facts) -> View {
     if let Some(count) = f.agents {
         lead.push(Lead::Mascot { count });
     }
-    View { lead, text: parts.join("   "), tone: Tone::Plain, level: false, viz: f.playing, plain: true }
+    View { lead, text: parts.join("   "), tone: Tone::Plain, level: false, viz: f.playing, plain: true, task_bar: f.task_bar, unread: f.unread }
 }
 
 pub fn time_text() -> String {
@@ -136,9 +152,10 @@ pub fn time_text() -> String {
     format!("{:02}:{:02}", h, m)
 }
 
-/// Факты из `State`, без чужих мьютексов: хватает для текста и его ширины.
-fn base(s: &State) -> Facts {
-    Facts {
+/// Вид по `State` и статикам фоновых потоков (микрофон/камера, плеер, уведомления).
+/// Каждый мьютекс берётся и сразу отпускается.
+pub fn view(s: &State) -> View {
+    let mut f = Facts {
         alarm: s.timers.alarm.as_ref().map(|a| a.to_string()),
         flash: s.osd.flash.clone(),
         time: time_text(),
@@ -146,18 +163,16 @@ fn base(s: &State) -> Facts {
         timer_left: s.timers.nearest_left(),
         battery: battery_short(s.osd.battery),
         agents: s.agents.attention().map(|(_, n)| n),
+        task_bar: s.tasks.bar(),
         ..Facts::default()
-    }
-}
-
-/// Полный вид: добавляет то, что живёт в статиках фоновых потоков (микрофон/камера, плеер).
-pub fn view(s: &State) -> View {
-    let mut f = base(s);
+    };
     {
         let u = watch::IN_USE.lock().unwrap();
         f.mic = !u.mic.is_empty();
         f.cam = !u.cam.is_empty();
+        f.busy_app = u.mic.first().or(u.cam.first()).cloned();
     }
+    f.unread = crate::feat::notifs::INBOX.lock().unwrap().unread;
     {
         let m = winrt::MEDIA.lock().unwrap();
         f.playing = m.has && m.playing;
@@ -166,9 +181,9 @@ pub fn view(s: &State) -> View {
     assemble(f)
 }
 
-/// Текст свёрнутой пилюли (раз в секунду сравнивается с прошлым, поэтому без мьютексов).
+/// Текст свёрнутой пилюли (раз в секунду сравнивается с прошлым).
 pub fn text(s: &State) -> String {
-    assemble(base(s)).text
+    view(s).text
 }
 
 /// Сейчас показывается полоска уровня (громкость, яркость), а не текст.
@@ -221,6 +236,19 @@ mod tests {
         // точка + зазор, обложка, маскот с числом
         assert_eq!(v.left_width(), (DOT + 4) + DOT_GAP + (ART + 10) + (MASCOT_W + 8 + 12));
         assert_eq!(v.right_width(), EQ_W + 10);
+    }
+
+    #[test]
+    fn stage1_extras() {
+        // Имя программы только пока микрофон или камера заняты, и не длиннее лимита.
+        let v = assemble(Facts { mic: true, busy_app: Some("Очень длинное имя программы".into()), ..facts() });
+        assert_eq!(v.text, "Очень длинное им   14:32");
+        assert_eq!(assemble(Facts { busy_app: Some("Zoom".into()), ..facts() }).text, "14:32");
+        // Счётчик и полоска задачи есть только в обычном виде.
+        let v = assemble(Facts { unread: 3, task_bar: Some(45), playing: true, ..facts() });
+        assert_eq!((v.unread, v.task_bar, v.right_width()), (3, Some(45), UNREAD_GAP + UNREAD_W + EQ_W + 10));
+        let v = assemble(Facts { unread: 3, task_bar: Some(45), flash: Some(Flash::Text("x".into(), false)), ..facts() });
+        assert_eq!((v.unread, v.task_bar, v.right_width()), (0, None, 0));
     }
 
     #[test]

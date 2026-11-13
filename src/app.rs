@@ -219,6 +219,7 @@ unsafe fn on_tab(hwnd: HWND, t: Tab) -> Redraw {
         ctl::refresh();
     }
     if t == Tab::Feed {
+        notifs::INBOX.lock().unwrap().unread = 0;
         notifs_poll();
     }
     sys_sampling_tick();

@@ -42,14 +42,25 @@ pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
         let mid = rc.bottom / 2;
         draw_left(p, s, &v.lead, x, mid);
         p.text(p.f.bold, text, RECT { left: x + left, ..rc }, color, DT_LEFT);
-        if right > 0 {
+        let mut rx = x + left + tw;
+        if v.unread > 0 {
+            // Синий счётчик пропущенных уведомлений.
+            rx += p.s(pill::UNREAD_GAP);
+            let (w, h) = (p.s(pill::UNREAD_W), p.s(16));
+            let r = RECT { left: rx, top: mid - h / 2, right: rx + w, bottom: mid - h / 2 + h };
+            p.fill(r, R_PILL, ACCENT);
+            let n = if v.unread > 9 { "9+".to_string() } else { v.unread.to_string() };
+            p.text(p.f.small, &n, r, FG, DT_CENTER);
+            rx += w;
+        }
+        if v.viz {
             // Настоящий спектр того, что играет (feat::viz), 4 столбика.
-            let vx = x + left + tw + p.s(10);
+            let vx = rx + p.s(10);
             p.viz(RECT { left: vx, top: mid - p.s(7), right: vx + p.s(EQ_W), bottom: mid + p.s(7) }, 4);
         }
     }
     if v.plain {
-        progress(p, rc);
+        progress(p, rc, v.task_bar);
     }
 }
 
@@ -92,14 +103,19 @@ unsafe fn draw_left(p: &mut Painter, s: &State, lead: &[Lead], mut x: i32, mid: 
     }
 }
 
-/// Тонкая полоска прогресса трека по низу (если играет и плеер сообщает время).
-unsafe fn progress(p: &Painter, rc: RECT) {
-    let m = winrt::MEDIA.lock().unwrap();
-    if !m.playing {
-        return;
-    }
-    let Some((cur, dur)) = m.progress() else { return };
-    drop(m);
+/// Тонкая полоска по низу: прогресс задачи скрипта, а если её нет — трека (играет и плеер сообщает время).
+unsafe fn progress(p: &Painter, rc: RECT, task: Option<u8>) {
+    let (cur, dur) = match task {
+        Some(pct) => (pct as f64, 100.0),
+        None => {
+            let m = winrt::MEDIA.lock().unwrap();
+            if !m.playing {
+                return;
+            }
+            let Some(t) = m.progress() else { return };
+            t
+        }
+    };
     // Отступ на полвысоты: там уже начинается скругление.
     let inset = rc.bottom / 2;
     let bar = RECT { left: inset, top: rc.bottom - p.s(4), right: rc.right - inset, bottom: rc.bottom - p.s(2) };
