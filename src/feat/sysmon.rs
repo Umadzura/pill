@@ -145,6 +145,9 @@ pub fn gpu_busy(prev: &[i64], cur: &[i64], dt: u64) -> Option<f32> {
 pub struct Snapshot {
     pub cpu: f32,
     pub cpu_hist: VecDeque<f32>,
+    /// История памяти и видеокарты за ту же минуту, в процентах (у видеокарты пусто, если данных нет).
+    pub ram_hist: VecDeque<f32>,
+    pub gpu_hist: VecDeque<f32>,
     pub ncpu: u32,
     pub ram: Option<(u64, u64)>,
     pub gpu: Option<f32>,
@@ -160,6 +163,14 @@ pub static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
 /// Текст предупреждения о нагрузке, приготовленный воркером (UI забирает и показывает).
 pub static LOAD_WARN: Mutex<Option<String>> = Mutex::new(None);
 
+/// Дописать значение в историю за минуту, выкинув самое старое.
+fn push_hist(h: &mut VecDeque<f32>, v: f32) {
+    if h.len() == HISTORY {
+        h.pop_front();
+    }
+    h.push_back(v);
+}
+
 /// Сборщик снимков. Живёт в фоновом воркере, пока открыта вкладка.
 pub struct Sampler {
     at: Instant,
@@ -167,6 +178,8 @@ pub struct Sampler {
     procs: Vec<Proc>,
     net: Option<(u64, u64)>,
     hist: VecDeque<f32>,
+    ram_hist: VecDeque<f32>,
+    gpu_hist: VecDeque<f32>,
     buf: Vec<u8>,
     disks: Option<Disks>,
     disk_prev: Option<u64>,
@@ -185,6 +198,8 @@ impl Sampler {
             procs: Vec::new(),
             net: sysinfo::net_totals(),
             hist: VecDeque::with_capacity(HISTORY),
+            ram_hist: VecDeque::with_capacity(HISTORY),
+            gpu_hist: VecDeque::with_capacity(HISTORY),
             buf: Vec::new(),
             disks,
             disk_prev,
@@ -212,10 +227,7 @@ impl Sampler {
             _ => 0.0,
         };
         self.cpu = cur;
-        if self.hist.len() == HISTORY {
-            self.hist.pop_front();
-        }
-        self.hist.push_back(cpu);
+        push_hist(&mut self.hist, cpu);
 
         let procs = self.read_procs();
         let dt = (secs * 1e7) as u64;
@@ -238,12 +250,21 @@ impl Sampler {
             _ => None,
         };
         self.disk_prev = disk_now;
+        let ram = sysinfo::memory();
+        if let Some((used, total)) = ram {
+            push_hist(&mut self.ram_hist, used as f32 * 100.0 / total.max(1) as f32);
+        }
+        if let Some(g) = gpu {
+            push_hist(&mut self.gpu_hist, g);
+        }
 
         Snapshot {
             cpu,
             cpu_hist: self.hist.clone(),
+            ram_hist: self.ram_hist.clone(),
+            gpu_hist: self.gpu_hist.clone(),
             ncpu: self.ncpu,
-            ram: sysinfo::memory(),
+            ram,
             gpu,
             net,
             disk_rate,
