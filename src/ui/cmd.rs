@@ -29,7 +29,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32) {
         let row = RECT { left: p.s(20), top: p.s(y), right: w - p.s(20), bottom: p.s(y + 30) };
         let h = Hit::Cmd(i);
         if p.hovered(h) || (s.input.active && s.input.sel == i) {
-            p.fill(row, 10, HOVER);
+            p.fill(row, R_ROW, HOVER);
         }
         p.hit(row, h);
         let (icon, label, right, color) = match r {

@@ -5,22 +5,32 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 
+use super::surface::Canvas;
 use crate::app::{scale, Hit, State};
 
-pub const BG: COLORREF = rgb(18, 18, 20);
-pub const FG: COLORREF = rgb(235, 235, 240);
-pub const DIM: COLORREF = rgb(140, 140, 150);
-pub const ACCENT: COLORREF = rgb(120, 150, 255);
-pub const PANEL: COLORREF = rgb(30, 30, 36);
-pub const HOVER: COLORREF = rgb(42, 42, 52);
-pub const SELECTED_TAB: COLORREF = rgb(40, 40, 48);
-pub const ON: COLORREF = rgb(56, 78, 160);
-pub const OFF_DIM: COLORREF = rgb(24, 24, 28);
-pub const DANGER: COLORREF = rgb(150, 50, 55);
-pub const WARN: COLORREF = rgb(255, 150, 70);
-pub const TRACK: COLORREF = rgb(52, 52, 60);
-pub const MIC: COLORREF = rgb(255, 150, 70);
-pub const CAM: COLORREF = rgb(80, 200, 120);
+// Палитра в духе тёмной темы iOS: чёрный фон, серые плитки, один акцентный цвет.
+pub const BG: COLORREF = rgb(0, 0, 0);
+pub const FG: COLORREF = rgb(245, 245, 247);
+pub const DIM: COLORREF = rgb(142, 142, 147);
+pub const ACCENT: COLORREF = rgb(10, 132, 255);
+pub const PANEL: COLORREF = rgb(28, 28, 30);
+pub const HOVER: COLORREF = rgb(44, 44, 46);
+pub const SELECTED_TAB: COLORREF = rgb(44, 44, 46);
+pub const ON: COLORREF = ACCENT;
+pub const OFF_DIM: COLORREF = rgb(18, 18, 19);
+pub const DANGER: COLORREF = rgb(255, 69, 58);
+pub const WARN: COLORREF = rgb(255, 159, 10);
+pub const TRACK: COLORREF = rgb(58, 58, 60);
+pub const MIC: COLORREF = rgb(255, 159, 10);
+pub const CAM: COLORREF = rgb(48, 209, 88);
+
+// Скругления (диаметр в логических px, как у прежнего CreateRoundRectRgn).
+/// Плитки и панели.
+pub const R_TILE: i32 = 28;
+/// Строки списков.
+pub const R_ROW: i32 = 18;
+/// «Капсула»: вкладки, поле ввода — скругление на всю высоту.
+pub const R_PILL: i32 = 60;
 
 // Значки шрифта Segoe MDL2 Assets.
 pub const I_PREV: &str = "\u{E892}";
@@ -68,13 +78,27 @@ pub struct Fonts {
     pub icon_big: HFONT,
 }
 
+/// Шрифт интерфейса: Segoe UI Variable (Windows 11), на Windows 10 его нет — обычный Segoe UI.
+pub fn face() -> PCWSTR {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let has = *HAS.get_or_init(|| {
+        let dir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
+        std::path::Path::new(&dir).join("Fonts").join("SegUIVar.ttf").exists()
+    });
+    if has {
+        w!("Segoe UI Variable Text")
+    } else {
+        w!("Segoe UI")
+    }
+}
+
 impl Fonts {
     pub unsafe fn new(dpi: u32) -> Self {
         Fonts {
-            bold: font(dpi, 14, true, w!("Segoe UI")),
-            title: font(dpi, 17, true, w!("Segoe UI")),
-            normal: font(dpi, 13, false, w!("Segoe UI")),
-            small: font(dpi, 11, false, w!("Segoe UI")),
+            bold: font(dpi, 14, true, face()),
+            title: font(dpi, 17, true, face()),
+            normal: font(dpi, 13, false, face()),
+            small: font(dpi, 11, false, face()),
             icon: font(dpi, 14, false, w!("Segoe MDL2 Assets")),
             icon_big: font(dpi, 20, false, w!("Segoe MDL2 Assets")),
         }
@@ -112,6 +136,12 @@ pub unsafe fn font(dpi: u32, size: i32, bold: bool, face: PCWSTR) -> HFONT {
 
 pub struct Painter<'a> {
     pub hdc: HDC,
+    /// Пиксели того же буфера: сглаженные фигуры рисуются напрямую, текст — через GDI.
+    pub cv: Canvas,
+    /// Сдвиг содержимого вниз в пикселях (под переключателем подвкладок).
+    pub oy: i32,
+    /// Сдвиг содержимого вправо в пикселях: ушко слева и центрирование во время анимации размера.
+    pub ox: i32,
     pub dpi: u32,
     pub f: &'a Fonts,
     pub hits: Vec<(RECT, Hit)>,
@@ -127,17 +157,37 @@ impl Painter<'_> {
     pub fn r(&self, l: i32, t: i32, rr: i32, b: i32) -> RECT {
         RECT { left: self.s(l), top: self.s(t), right: self.s(rr), bottom: self.s(b) }
     }
+    /// Прямоугольник содержимого → пиксели окна.
+    pub fn off(&self, r: RECT) -> RECT {
+        RECT { left: r.left + self.ox, top: r.top + self.oy, right: r.right + self.ox, bottom: r.bottom + self.oy }
+    }
+    /// Обложка трека со сглаженными углами (radius — диаметр скругления в логических px).
+    pub unsafe fn art(&self, r: RECT, a: &crate::bg::winrt::Art, radius: i32) {
+        let r = self.off(r);
+        SetStretchBltMode(self.hdc, HALFTONE);
+        let _ = SetBrushOrgEx(self.hdc, 0, 0, None);
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: a.w,
+                biHeight: -a.h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        StretchDIBits(self.hdc, r.left, r.top, r.right - r.left, r.bottom - r.top, 0, 0, a.w, a.h, Some(a.px.as_ptr() as *const _), &bmi, DIB_RGB_COLORS, SRCCOPY);
+        // Скругляем уже нарисованное: сглаженно, без региона отсечения.
+        let _ = GdiFlush();
+        self.cv.round_off(r, self.s(radius), BG);
+    }
+    /// Сглаженный прямоугольник; radius — диаметр скругления в логических px (0 — прямые углы).
     pub unsafe fn fill(&self, r: RECT, radius: i32, c: COLORREF) {
-        let br = CreateSolidBrush(c);
-        if radius > 0 {
-            let rad = self.s(radius);
-            let rg = CreateRoundRectRgn(r.left, r.top, r.right + 1, r.bottom + 1, rad, rad);
-            let _ = FillRgn(self.hdc, rg, br);
-            let _ = DeleteObject(rg);
-        } else {
-            FillRect(self.hdc, &r, br);
-        }
-        let _ = DeleteObject(br);
+        // GDI мог ещё не дописать текст в буфер: прямой доступ к пикселям только после сброса.
+        let _ = GdiFlush();
+        self.cv.fill_round(self.off(r), self.s(radius), c);
     }
     pub unsafe fn text(&self, font: HFONT, s: &str, r: RECT, c: COLORREF, flags: DRAW_TEXT_FORMAT) {
         // Пустой срез даёт DrawTextW висячий указатель — падение. Не убирать.
@@ -147,7 +197,7 @@ impl Painter<'_> {
         SelectObject(self.hdc, font);
         SetTextColor(self.hdc, c);
         let mut buf = wide(s);
-        let mut r = r;
+        let mut r = self.off(r);
         DrawTextW(self.hdc, &mut buf, &mut r, flags | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER);
     }
     pub unsafe fn measure(&self, font: HFONT, s: &str) -> i32 {
@@ -160,20 +210,22 @@ impl Painter<'_> {
         sz.cx
     }
     pub fn hit(&mut self, r: RECT, h: Hit) {
-        self.hits.push((r, h));
+        self.hits.push((self.off(r), h));
     }
     pub fn hovered(&self, h: Hit) -> bool {
         self.hover == Some(h)
     }
     /// Полоски визуализатора: рисуем и запоминаем место для покадровой перерисовки.
     pub unsafe fn viz(&mut self, r: RECT, bars: usize) {
-        super::viz::draw(self.hdc, self.dpi, r, bars);
+        let r = self.off(r);
+        let _ = GdiFlush();
+        super::viz::draw(self.cv, self.dpi, r, bars);
         self.viz = Some(super::viz::VizArea { rect: r, bars });
     }
     /// Круглая кнопка-значок.
     pub unsafe fn icon_button(&mut self, r: RECT, icon: &str, h: Hit, big: bool) {
         if self.hovered(h) {
-            self.fill(r, 40, HOVER);
+            self.fill(r, R_PILL, HOVER);
         }
         let f = if big { self.f.icon_big } else { self.f.icon };
         self.text(f, icon, r, FG, DT_CENTER);
@@ -205,7 +257,7 @@ impl Painter<'_> {
     pub unsafe fn input(&mut self, w: i32, s: &State, placeholder: &str) {
         let inp = &s.input;
         let r = RECT { left: self.s(20), top: self.s(56), right: w - self.s(20), bottom: self.s(86) };
-        self.fill(r, 12, if inp.active { HOVER } else { PANEL });
+        self.fill(r, R_PILL, if inp.active { HOVER } else { PANEL });
         self.text(self.f.icon, I_SEARCH, RECT { left: r.left + self.s(12), ..r }, DIM, DT_LEFT);
         let tr = RECT { left: r.left + self.s(36), right: r.right - self.s(12), ..r };
         if inp.text.is_empty() {

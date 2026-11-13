@@ -27,6 +27,8 @@ pub const WM_APP_VIZ: u32 = WM_APP + 9;
 pub const WM_APP_SYS: u32 = WM_APP + 10;
 /// Поток API: пришли события от скриптов (`feat::api::QUEUE`).
 pub const WM_APP_API: u32 = WM_APP + 11;
+/// Воркер: список чужих уведомлений поменялся или пришло новое (`feat::notifs::INBOX`).
+pub const WM_APP_NOTIF: u32 = WM_APP + 12;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -45,6 +47,10 @@ pub const TIMER_CTL: usize = 4;
 pub const TIMER_FLASH: usize = 5;
 /// 250 мс, разовый: открыть выделение области, когда панель уже свернулась.
 pub const TIMER_SHOT: usize = 6;
+/// 15 мс, только пока идёт анимация раскрытия/сворачивания (~0,2 с), потом снимается.
+pub const TIMER_ANIM: usize = 7;
+/// Разовый: спрятать карточку из чёлки (уведомление, «агент закончил»).
+pub const TIMER_PEEK: usize = 8;
 
 pub const COLLAPSE_DELAY_MS: u32 = 350;
 

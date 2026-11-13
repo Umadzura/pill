@@ -14,21 +14,61 @@ use crate::{pill, sys, ui};
 // Размеры в логических пикселях (при 100% масштабе).
 pub const COLLAPSED_MIN_W: i32 = 190;
 pub const COLLAPSED_H: i32 = 32;
-pub const EXPANDED_W: i32 = 560;
-pub const EXPANDED_H: i32 = 370;
+pub const EXPANDED_W: i32 = 600;
+pub const EXPANDED_H: i32 = 400;
 /// Ширина свёрнутой пилюли с полоской громкости.
 pub const LEVEL_W: i32 = 240;
-const TOP_MARGIN: i32 = 6;
+/// Чёлка прижата к верхнему краю экрана.
+const TOP_MARGIN: i32 = 0;
+/// Радиус нижних углов чёлки (верхние прямые).
+pub const BOTTOM_R_COLLAPSED: i32 = 15;
+pub const BOTTOM_R_EXPANDED: i32 = 28;
+/// Ширина «ушка»: вогнутого перехода чёлки в верхний край экрана, с каждой стороны.
+pub const EAR: i32 = 9;
+/// Виды окна: свёрнутая чёлка, карточка (уведомление, просьба агента), раскрытая панель.
+pub const MODE_COLLAPSED: u8 = 0;
+pub const MODE_PEEK: u8 = 1;
+pub const MODE_EXPANDED: u8 = 2;
+
+/// Какой вид сейчас нужен.
+pub fn mode(s: &crate::app::State) -> u8 {
+    if s.shell.expanded {
+        MODE_EXPANDED
+    } else if s.peek.is_some() {
+        MODE_PEEK
+    } else {
+        MODE_COLLAPSED
+    }
+}
+
+/// Длительность раскрытия и сворачивания.
+const ANIM_MS: f32 = 200.0;
+
+/// Плавная смена размера окна при раскрытии и сворачивании.
+struct Anim {
+    /// Что рисовать, пока едем: больший из двух видов (он обрезается размером окна).
+    view: u8,
+    from: (i32, i32),
+    to: (i32, i32),
+    start: std::time::Instant,
+}
 
 pub struct Shell {
     pub expanded: bool,
     /// TrackMouseEvent уже взведён.
     pub tracking: bool,
     pub tab: Tab,
+    /// Какая страница группы «Система» открывалась последней (Управление или Монитор).
+    pub sys_page: Tab,
     pub dpi: u32,
     /// Последний текст свёрнутой пилюли: ширину пересчитываем только при его смене.
     pub last_collapsed: String,
     size: (i32, i32),
+    anim: Option<Anim>,
+    /// Вид, который был на экране до текущей анимации.
+    last_view: u8,
+    /// Каким окно было при прошлой раскладке (MODE_*): смена запускает анимацию.
+    shown_mode: u8,
     pub taskbar_created: u32,
     pub icon: HICON,
     /// На нашем мониторе полноэкранное окно (игра, видео): пилюлю прячем.
@@ -43,9 +83,13 @@ impl Shell {
             expanded: false,
             tracking: false,
             tab: Tab::Music,
+            sys_page: Tab::Controls,
             dpi: 96,
             last_collapsed: String::new(),
             size: (0, 0),
+            anim: None,
+            last_view: MODE_COLLAPSED,
+            shown_mode: MODE_COLLAPSED,
             taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
             icon: sys::icon::make(),
             fullscreen: false,
@@ -56,41 +100,68 @@ impl Shell {
     pub fn visible(&self) -> bool {
         !self.fullscreen || self.expanded
     }
+    /// Идёт анимация: какой вид рисовать (MODE_*).
+    pub fn anim_view(&self) -> Option<u8> {
+        self.anim.as_ref().map(|a| a.view)
+    }
     /// Сбросить запомненный размер: следующий layout() обязательно переставит окно.
     pub fn invalidate_size(&mut self) {
         self.size = (0, 0);
     }
 }
 
-/// Ставит окно по центру верхнего края основного монитора и задаёт скруглённую форму.
+/// Поставить окно размером w×h по центру верхнего края и сразу показать кадр этого размера
+/// (слоёное окно само не перерисовывается).
+unsafe fn place(hwnd: HWND, w: i32, h: i32) {
+    let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
+    let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, TOP_MARGIN, w, h, SWP_NOACTIVATE);
+    ui::render(hwnd);
+}
+
+/// Считает размер окна по содержимому и ставит его по центру верхнего края основного монитора.
+/// Форму (ушки, скруглённый низ) даёт отрисовка. Раскрытие и сворачивание идут плавно (TIMER_ANIM).
 pub unsafe fn layout(hwnd: HWND) {
-    let (expanded, dpi, text, level, lead) =
-        st(|s| (s.shell.expanded, s.shell.dpi, pill::text(s), pill::shows_level(s), pill::lead_width(s)));
-    let (w, h) = if expanded {
+    let (now_mode, peek_h, dpi, text, level, lead) =
+        st(|s| (mode(s), s.peek.as_ref().map(|p| p.height()), s.shell.dpi, pill::text(s), pill::shows_level(s), pill::lead_width(s)));
+    let (w, h) = if now_mode == MODE_EXPANDED {
         (scale(EXPANDED_W, dpi), scale(EXPANDED_H, dpi))
+    } else if let Some(ph) = peek_h {
+        (scale(crate::feat::peek::W, dpi), scale(ph, dpi))
     } else if level {
         (scale(LEVEL_W, dpi), scale(COLLAPSED_H, dpi))
     } else {
         let tw = ui::measure(hwnd, dpi, &text) + scale(lead, dpi);
         (tw.max(scale(COLLAPSED_MIN_W - 36, dpi)) + scale(36, dpi), scale(COLLAPSED_H, dpi))
     };
-    let changed = st(|s| {
+    let w = w + 2 * scale(EAR, dpi);
+    let visible = IsWindowVisible(hwnd).as_bool();
+    let (changed, flip) = st(|s| {
+        if s.shell.anim.is_none() {
+            s.shell.last_view = s.shell.shown_mode;
+        }
         s.shell.last_collapsed = text;
         let c = s.shell.size != (w, h);
         s.shell.size = (w, h);
-        c
+        (c, std::mem::replace(&mut s.shell.shown_mode, now_mode))
     });
-    if changed {
-        let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
-        let y = scale(TOP_MARGIN, dpi);
-        let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
-        let radius = if expanded { scale(28, dpi) } else { h };
-        let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius, radius);
-        SetWindowRgn(hwnd, rgn, true);
+    let flip = flip != now_mode;
+    if flip && visible {
+        // Вид сменился: едем от текущего размера окна к новому.
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        st(|s| {
+            let old = s.shell.anim_view().unwrap_or(0);
+            let view = old.max(now_mode).max(if rc.bottom > scale(COLLAPSED_H, dpi) { s.shell.last_view } else { 0 });
+            s.shell.anim = Some(Anim { view, from: (rc.right, rc.bottom), to: (w, h), start: std::time::Instant::now() })
+        });
+        SetTimer(hwnd, TIMER_ANIM, 15, None);
+    } else if st(|s| s.shell.anim.as_mut().map(|a| a.to = (w, h)).is_some()) {
+        // Анимация уже идёт: поменялась только цель.
+    } else if changed {
+        place(hwnd, w, h);
     }
     // В полноэкранном режиме прячемся. Открыли хоткеем — показываемся, пока панель раскрыта.
     let want = st(|s| !s.shell.fullscreen || s.shell.expanded);
-    let visible = IsWindowVisible(hwnd).as_bool();
     if want && !visible {
         // Заодно снова встаём поверх: полноэкранные программы любят забирать TOPMOST.
         let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -98,6 +169,33 @@ pub unsafe fn layout(hwnd: HWND) {
         let _ = ShowWindow(hwnd, SW_HIDE);
     }
     let _ = InvalidateRect(hwnd, None, false);
+}
+
+/// TIMER_ANIM: следующий кадр раскрытия или сворачивания.
+pub unsafe fn on_anim_timer(hwnd: HWND) {
+    let step = st(|s| {
+        let a = s.shell.anim.as_ref()?;
+        let t = (a.start.elapsed().as_secs_f32() * 1000.0 / ANIM_MS).min(1.0);
+        // Быстрый старт, мягкая остановка.
+        let k = 1.0 - (1.0 - t).powi(3);
+        let lerp = |from: i32, to: i32| from + ((to - from) as f32 * k).round() as i32;
+        let size = (lerp(a.from.0, a.to.0), lerp(a.from.1, a.to.1));
+        if t >= 1.0 {
+            s.shell.anim = None;
+        }
+        Some((size, t >= 1.0))
+    });
+    match step {
+        Some((size, done)) => {
+            if done {
+                let _ = KillTimer(hwnd, TIMER_ANIM);
+            }
+            place(hwnd, size.0, size.1);
+        }
+        None => {
+            let _ = KillTimer(hwnd, TIMER_ANIM);
+        }
+    }
 }
 
 pub unsafe fn set_expanded(hwnd: HWND, value: bool) {

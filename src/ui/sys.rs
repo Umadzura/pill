@@ -19,7 +19,7 @@ fn level_color(pct: f32) -> COLORREF {
 
 /// Плитка: подпись, крупное значение, строка под ним и полоска заполнения.
 unsafe fn tile(p: &Painter, r: RECT, label: &str, value: &str, sub: &str, pct: Option<f32>) {
-    p.fill(r, 14, PANEL);
+    p.fill(r, R_TILE, PANEL);
     let x = r.left + p.s(12);
     p.text(p.f.small, label, RECT { left: x, top: r.top + p.s(6), right: r.right - p.s(8), bottom: r.top + p.s(22) }, DIM, DT_LEFT);
     p.text(p.f.title, value, RECT { left: x, top: r.top + p.s(22), right: r.right - p.s(8), bottom: r.top + p.s(46) }, FG, DT_LEFT);
@@ -64,7 +64,7 @@ pub unsafe fn draw(p: &mut Painter, _s: &State, w: i32) {
 
     // История ЦП за минуту: столбики справа налево, новые справа.
     let graph = RECT { left, top: p.s(140), right: w - left, bottom: p.s(184) };
-    p.fill(graph, 10, PANEL);
+    p.fill(graph, R_ROW, PANEL);
     let inner = RECT { left: graph.left + p.s(8), top: graph.top + p.s(6), right: graph.right - p.s(8), bottom: graph.bottom - p.s(6) };
     let col = ((inner.right - inner.left) as f32 / HISTORY as f32).max(1.0);
     let n = sn.cpu_hist.len();
@@ -100,7 +100,7 @@ pub unsafe fn draw(p: &mut Painter, _s: &State, w: i32) {
         let y = 234 + i as i32 * 24;
         let row = RECT { left, top: p.s(y), right: w - left, bottom: p.s(y + 24) };
         if i % 2 == 0 {
-            p.fill(row, 8, PANEL);
+            p.fill(row, R_ROW, PANEL);
         }
         let name = RECT { left: row.left + p.s(10), right: row.right - p.s(170), ..row };
         p.text(p.f.normal, &a.name, name, FG, DT_LEFT | DT_END_ELLIPSIS);

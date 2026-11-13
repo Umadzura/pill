@@ -58,7 +58,7 @@ fn main() {
         RegisterClassW(&wc);
 
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
             class,
             w!("Pill"),
             WS_POPUP,

@@ -6,6 +6,8 @@
 //! GET|POST /task?id=render&state=done               готово: задача пропадает, «✓ Рендер»
 //! GET|POST /task?id=render&state=error              ошибка: «✗ Рендер: ошибка»
 //! GET      /ping                                     «pill» — проверить, что жив
+//! POST     /hook                                     JSON хука Claude Code (см. `feat::agents`)
+//! GET|POST /agent?id=a1&name=pill&state=work&text=…  статус любого агента: work | ask | wait | done | gone
 //! ```
 //! Параметры — в адресе или в теле (`application/x-www-form-urlencoded`). Для /notify тело
 //! без параметров целиком становится текстом. Слушаем только 127.0.0.1 (поток — `bg::api`).
@@ -18,7 +20,9 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
 
 use crate::app::st;
+use crate::feat::agents::{self, AgentState};
 use crate::feat::osd::{self, Flash};
+use crate::feat::peek::{self, Peek, PeekKind};
 
 pub const PORT: u16 = 47821;
 /// Сколько байт запроса читаем максимум (заголовки + тело).
@@ -42,6 +46,7 @@ pub enum TaskState {
 pub enum Event {
     Notify { text: String, secs: u32 },
     Task { id: String, title: Option<String>, progress: Option<u8>, state: TaskState },
+    Agent(agents::Update),
 }
 
 /// Ответ для клиента: код и текст.
@@ -52,10 +57,12 @@ pub struct Reply {
 }
 
 const OK: Reply = Reply { code: 200, body: "ok\n" };
+/// Хукам отвечаем пустым телом: Claude Code подмешивает stdout хука в контекст.
+const QUIET: Reply = Reply { code: 200, body: "" };
 const PONG: Reply = Reply { code: 200, body: "pill\n" };
 const BAD: Reply = Reply { code: 400, body: "bad request\n" };
 const FORBIDDEN: Reply = Reply { code: 403, body: "forbidden\n" };
-const NOT_FOUND: Reply = Reply { code: 404, body: "not found: /notify, /task, /ping\n" };
+const NOT_FOUND: Reply = Reply { code: 404, body: "not found: /notify, /task, /agent, /hook, /ping\n" };
 const TOO_BIG: Reply = Reply { code: 413, body: "too large\n" };
 
 /// Сколько всего байт должен занять запрос (заголовки + Content-Length), если заголовки уже пришли.
@@ -73,9 +80,6 @@ pub fn expected_len(buf: &[u8]) -> Option<usize> {
 
 /// Разобрать запрос целиком: что ответить и что сделать.
 pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
-    if buf.len() > MAX_REQUEST {
-        return (TOO_BIG, None);
-    }
     let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { return (BAD, None) };
     let Ok(head) = std::str::from_utf8(&buf[..end]) else { return (BAD, None) };
     let body = &buf[end + 4..];
@@ -104,6 +108,14 @@ pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
         return (FORBIDDEN, None);
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if path == "/hook" {
+        // Тело хука бывает длиннее лимита (большой запрос, вывод инструмента): нужные поля идут первыми,
+        // поэтому разбираем и обрезанное.
+        return (QUIET, agents::from_hook(&String::from_utf8_lossy(body)).map(Event::Agent));
+    }
+    if buf.len() > MAX_REQUEST {
+        return (TOO_BIG, None);
+    }
     let mut params = parse_form(query);
     let body_text = String::from_utf8_lossy(body).trim().to_string();
     if !body_text.is_empty() {
@@ -138,6 +150,20 @@ pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
                 _ => return (BAD, None),
             };
             (OK, Some(Event::Task { id, title, progress, state }))
+        }
+        "/agent" => {
+            let Some(id) = params.get("id").map(|s| clip(s.trim(), MAX_TITLE)).filter(|s| !s.is_empty()) else { return (BAD, None) };
+            let state = match params.get("state").map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+                None | Some("") | Some("work") | Some("run") | Some("running") => AgentState::Work,
+                Some("ask") | Some("permission") => AgentState::Ask,
+                Some("wait") | Some("idle") => AgentState::Wait,
+                Some("done") | Some("ok") | Some("finished") => AgentState::Done,
+                Some("gone") | Some("end") => AgentState::Gone,
+                _ => return (BAD, None),
+            };
+            let name = params.get("name").map(|s| clip(s.trim(), MAX_TITLE)).filter(|s| !s.is_empty());
+            let note = params.get("text").map(|s| clip(s.trim(), MAX_TEXT)).filter(|s| !s.is_empty());
+            (OK, Some(Event::Agent(agents::Update { id, name, state, note, answerable: false })))
         }
         _ => (NOT_FOUND, None),
     }
@@ -269,6 +295,26 @@ pub unsafe fn on_events(hwnd: HWND) {
                 Notice::Done(name) => flash = Some((format!("✓ {}", name), false, 4000)),
                 Notice::Failed(name) => flash = Some((format!("✗ {}: ошибка", name), true, 8000)),
             },
+            Event::Agent(u) => {
+                let id = u.id.clone();
+                match st(|s| s.agents.apply(u, now)) {
+                    Some(agents::Notice::Ask { name, text, answerable }) => {
+                        let kind = PeekKind::Ask { id, answerable };
+                        let pk = Peek { kind, app: "Claude Code".into(), title: format!("{}: нужно разрешение", name), body: text };
+                        // С кнопками ждём ответа, без кнопок это просто напоминание.
+                        peek::show(hwnd, pk, if answerable { None } else { Some(8000) });
+                    }
+                    Some(agents::Notice::Done { name, text }) => {
+                        let pk = Peek { kind: PeekKind::Done, app: "Claude Code".into(), title: format!("{}: закончил", name), body: text };
+                        peek::show(hwnd, pk, Some(4000));
+                    }
+                    Some(agents::Notice::Resolved) => {
+                        crate::bg::api::answer(&id, None);
+                        peek::resolve(hwnd, &id);
+                    }
+                    None => {}
+                }
+            }
         }
     }
     match flash {
@@ -322,6 +368,27 @@ mod tests {
         assert_eq!(req("GET /nope HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 404);
         assert_eq!(req("DELETE /ping HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 400);
         assert_eq!(req("GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\n").0, PONG);
+    }
+
+    #[test]
+    fn agents_endpoints() {
+        let body = r#"{"session_id":"s1","cwd":"C:\\p\\pill","hook_event_name":"Stop"}"#;
+        let raw = format!("POST /hook HTTP/1.1\r\nHost: 127.0.0.1:47821\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
+        let (r, e) = handle(raw.as_bytes());
+        assert_eq!((r.code, r.body), (200, ""));
+        assert_eq!(e, Some(Event::Agent(agents::Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Done, note: None, answerable: false })));
+        // Тело длиннее лимита: поля в начале всё равно читаются.
+        let big = format!(r#"{{"session_id":"s2","hook_event_name":"UserPromptSubmit","prompt":"{}"#, "я".repeat(MAX_REQUEST));
+        let raw = format!("POST /hook HTTP/1.1\r\nHost: localhost\r\n\r\n{}", big);
+        let (r, e) = handle(raw.as_bytes());
+        assert_eq!(r.code, 200);
+        assert!(matches!(e, Some(Event::Agent(agents::Update { state: AgentState::Work, note: None, .. }))));
+        // Неинтересное событие хука — молча ок.
+        assert_eq!(req("POST /hook HTTP/1.1\r\nHost: localhost\r\n\r\n{\"session_id\":\"s\",\"hook_event_name\":\"SubagentStop\"}"), (QUIET, None));
+        let (_, e) = req("GET /agent?id=a&name=bot&state=ask&text=%D0%BC%D0%BE%D0%B6%D0%BD%D0%BE%3F HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        assert_eq!(e, Some(Event::Agent(agents::Update { id: "a".into(), name: Some("bot".into()), state: AgentState::Ask, note: Some("можно?".into()), answerable: false })));
+        assert_eq!(req("GET /agent?name=bot HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 400);
+        assert_eq!(req("GET /agent?id=a&state=zzz HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 400);
     }
 
     #[test]

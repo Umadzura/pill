@@ -2,12 +2,15 @@
 //! который возвращает, что перерисовать. GDI здесь нет (рисует `ui/`), Windows — через `sys/`.
 //! Внутри `st()` только данные, Win32 снаружи (правило из ARCHITECTURE.md, раздел 4).
 
+pub mod agents;
 pub mod api;
 pub mod clip;
 pub mod cmd;
 pub mod ctl;
 pub mod music;
+pub mod notifs;
 pub mod osd;
+pub mod peek;
 pub mod sysmon;
 pub mod timers;
 pub mod viz;
