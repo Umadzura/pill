@@ -41,13 +41,15 @@ pub struct Inbox {
     pub list: Vec<Notif>,
     /// Самое свежее из только что пришедших (UI забирает по WM_APP_NOTIF и показывает карточкой).
     pub fresh: Option<Notif>,
+    /// Сколько пришло с тех пор, как открывали «События» (счётчик в свёрнутой чёлке).
+    pub unread: usize,
     /// Id из прошлого чтения. None — ещё не читали: то, что уже лежит в центре уведомлений, не «новое».
     known: Option<Vec<u32>>,
 }
 
 impl Inbox {
     pub const fn new() -> Inbox {
-        Inbox { list: Vec::new(), fresh: None, known: None }
+        Inbox { list: Vec::new(), fresh: None, unread: 0, known: None }
     }
 
     /// Положить свежепрочитанный список. true — список поменялся (надо перерисовать).
@@ -59,6 +61,7 @@ impl Inbox {
             if let Some(n) = cur.iter().find(|n| !known.contains(&n.id)) {
                 self.fresh = Some(n.clone());
             }
+            self.unread += cur.iter().filter(|n| !known.contains(&n.id)).count();
         }
         self.known = Some(cur.iter().map(|n| n.id).collect());
         let changed = self.list != cur;
@@ -88,6 +91,18 @@ mod tests {
 
     fn n(id: u32, created: i64) -> Notif {
         Notif { id, app: "Telegram".into(), title: format!("Чат {}", id), body: "привет".into(), created }
+    }
+
+    #[test]
+    fn unread_counts_only_new() {
+        let mut b = Inbox::new();
+        // Первое чтение: всё, что уже лежало в центре уведомлений, не считается.
+        b.update(vec![n(1, 10), n(2, 20)]);
+        assert_eq!(b.unread, 0);
+        b.update(vec![n(1, 10), n(2, 20), n(3, 30), n(4, 40)]);
+        assert_eq!(b.unread, 2);
+        b.update(vec![n(3, 30), n(4, 40)]);
+        assert_eq!(b.unread, 2);
     }
 
     #[test]

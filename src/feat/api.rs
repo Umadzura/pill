@@ -266,6 +266,11 @@ impl Tasks {
         self.list.len() != n
     }
 
+    /// Прогресс для полоски в свёрнутой пилюле: первая из показанных задач, у которой он есть.
+    pub fn bar(&self) -> Option<u8> {
+        self.list.iter().take(SHOWN_TASKS).find_map(|t| t.progress).map(|p| p.min(100))
+    }
+
     /// Для свёрнутой пилюли: «Рендер 45%», «Загрузка…».
     pub fn badges(&self) -> Vec<String> {
         self.list
