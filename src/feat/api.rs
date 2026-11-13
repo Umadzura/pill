@@ -47,6 +47,8 @@ pub enum Event {
     Notify { text: String, secs: u32 },
     Task { id: String, title: Option<String>, progress: Option<u8>, state: TaskState },
     Agent(agents::Update),
+    /// Раскрыть панель на вкладке (или свернуть): для скриптов и для сверки вида по снимку экрана.
+    Open(String),
 }
 
 /// Ответ для клиента: код и текст.
@@ -130,6 +132,7 @@ pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
     }
     match path {
         "/ping" => (PONG, None),
+        "/open" => (OK, Some(Event::Open(params.get("tab").map(|t| t.trim().to_ascii_lowercase()).unwrap_or_default()))),
         "/notify" => {
             let text = clip(params.get("text").map(|s| s.trim()).unwrap_or(""), MAX_TEXT);
             if text.is_empty() {
@@ -163,7 +166,7 @@ pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
             };
             let name = params.get("name").map(|s| clip(s.trim(), MAX_TITLE)).filter(|s| !s.is_empty());
             let note = params.get("text").map(|s| clip(s.trim(), MAX_TEXT)).filter(|s| !s.is_empty());
-            (OK, Some(Event::Agent(agents::Update { id, name, state, note, answerable: false })))
+            (OK, Some(Event::Agent(agents::Update { id, name, state, note, answerable: false, extra: agents::Extra::default() })))
         }
         _ => (NOT_FOUND, None),
     }
@@ -300,9 +303,38 @@ pub unsafe fn on_events(hwnd: HWND) {
                 Notice::Done(name) => flash = Some((format!("✓ {}", name), false, 4000)),
                 Notice::Failed(name) => flash = Some((format!("✗ {}: ошибка", name), true, 8000)),
             },
+            Event::Open(tab) => {
+                use crate::app::Tab;
+                let t = match tab.as_str() {
+                    "music" => Some(Tab::Music),
+                    "clip" => Some(Tab::Clipboard),
+                    "cmd" => Some(Tab::Commands),
+                    "ctl" => Some(Tab::Controls),
+                    "mon" => Some(Tab::System),
+                    "feed" | "notifs" => Some(Tab::Feed),
+                    _ => None,
+                };
+                if let Some(t) = t {
+                    st(|s| {
+                        s.shell.tab = t;
+                        if matches!(t, Tab::Controls | Tab::System) {
+                            s.shell.sys_page = t;
+                        }
+                        s.feed_notifs = tab == "notifs";
+                    });
+                }
+                crate::shell::set_expanded(hwnd, t.is_some());
+                crate::shell::layout(hwnd);
+            }
             Event::Agent(u) => {
                 let id = u.id.clone();
-                match st(|s| s.agents.apply(u, now)) {
+                let notice = st(|s| s.agents.apply(u, now));
+                // Ветку git читаем один раз на запрос человека, вне st().
+                if let Some(cwd) = st(|s| s.agents.wants_branch(&id)) {
+                    let branch = agents::read_branch(&cwd);
+                    st(|s| s.agents.set_branch(&id, branch));
+                }
+                match notice {
                     Some(agents::Notice::Ask { name, text, answerable }) => {
                         let kind = PeekKind::Ask { id, answerable };
                         let pk = Peek { kind, app: "Claude Code".into(), title: format!("{}: нужно разрешение", name), body: text };
@@ -381,7 +413,7 @@ mod tests {
         let raw = format!("POST /hook HTTP/1.1\r\nHost: 127.0.0.1:47821\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
         let (r, e) = handle(raw.as_bytes());
         assert_eq!((r.code, r.body), (200, ""));
-        assert_eq!(e, Some(Event::Agent(agents::Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Done, note: None, answerable: false })));
+        assert_eq!(e, Some(Event::Agent(agents::Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Done, note: None, answerable: false, extra: agents::Extra { cwd: Some("C:\\p\\pill".into()), ..Default::default() } })));
         // Тело длиннее лимита: поля в начале всё равно читаются.
         let big = format!(r#"{{"session_id":"s2","hook_event_name":"UserPromptSubmit","prompt":"{}"#, "я".repeat(MAX_REQUEST));
         let raw = format!("POST /hook HTTP/1.1\r\nHost: localhost\r\n\r\n{}", big);
@@ -391,7 +423,7 @@ mod tests {
         // Неинтересное событие хука — молча ок.
         assert_eq!(req("POST /hook HTTP/1.1\r\nHost: localhost\r\n\r\n{\"session_id\":\"s\",\"hook_event_name\":\"SubagentStop\"}"), (QUIET, None));
         let (_, e) = req("GET /agent?id=a&name=bot&state=ask&text=%D0%BC%D0%BE%D0%B6%D0%BD%D0%BE%3F HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        assert_eq!(e, Some(Event::Agent(agents::Update { id: "a".into(), name: Some("bot".into()), state: AgentState::Ask, note: Some("можно?".into()), answerable: false })));
+        assert_eq!(e, Some(Event::Agent(agents::Update { id: "a".into(), name: Some("bot".into()), state: AgentState::Ask, note: Some("можно?".into()), answerable: false, extra: agents::Extra::default() })));
         assert_eq!(req("GET /agent?name=bot HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 400);
         assert_eq!(req("GET /agent?id=a&state=zzz HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 400);
     }

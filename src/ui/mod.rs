@@ -104,7 +104,10 @@ pub unsafe fn render(hwnd: HWND) {
                 // Вкладки шириной по подписи. «Система» — группа из двух страниц.
                 let mut left = p.s(16);
                 for (t, name) in TABS.iter() {
-                    let r = RECT { left, top: p.s(14), right: left + p.measure(fonts.bold, name) + p.s(24), bottom: p.s(44) };
+                    // На «Событиях» оранжевый счётчик: скольким агентам нужно разрешение.
+                    let badge = if *t == Tab::Feed { s.agents.summary().0 } else { 0 };
+                    let extra = if badge > 0 { p.s(22) } else { 0 };
+                    let r = RECT { left, top: p.s(14), right: left + p.measure(fonts.bold, name) + p.s(24) + extra, bottom: p.s(44) };
                     left = r.right + p.s(4);
                     let group = *t == Tab::Controls;
                     let on = *t == s.shell.tab || (group && s.shell.tab == Tab::System);
@@ -114,11 +117,21 @@ pub unsafe fn render(hwnd: HWND) {
                     } else if p.hovered(h) {
                         p.fill(r, R_PILL, PANEL);
                     }
-                    p.text(fonts.bold, name, r, if on { FG } else { DIM }, DT_CENTER);
+                    p.text(fonts.bold, name, RECT { right: r.right - extra, ..r }, if on { FG } else { DIM }, DT_CENTER);
+                    if badge > 0 {
+                        let (d, mid) = (p.s(18), (r.top + r.bottom) / 2);
+                        let b = RECT { left: r.right - p.s(10) - d, top: mid - d / 2, right: r.right - p.s(10), bottom: mid - d / 2 + d };
+                        p.fill(b, R_PILL, WARN);
+                        p.text(fonts.small, &badge.to_string(), b, BG, DT_CENTER);
+                    }
                     p.hit(r, h);
                 }
                 let r = RECT { left: 0, top: p.s(14), right: w - p.s(20), bottom: p.s(44) };
-                p.text(fonts.bold, &time_text(), r, DIM, DT_RIGHT);
+                let clock = match crate::feat::osd::battery_short(s.osd.battery) {
+                    Some(b) => format!("{} · {}", time_text(), b),
+                    None => time_text(),
+                };
+                p.text(fonts.bold, &clock, r, DIM, DT_RIGHT);
 
                 if let Some(a) = &s.timers.alarm {
                     let body = RECT { left: 0, top: p.s(50), right: w, bottom: h };

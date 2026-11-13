@@ -110,11 +110,15 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         } else if p.hovered(hit) && note.1 != DANGER {
             note = (label.to_string(), FG);
         }
-        p.fill(r, R_PILL, if confirming { DANGER } else if p.hovered(hit) { HOVER } else { PANEL });
+        // Выключение всегда красное: самая опасная кнопка.
+        p.fill(r, R_PILL, if confirming || *pw == Pw::Shutdown { DANGER } else if p.hovered(hit) { HOVER } else { PANEL });
         p.text(p.f.icon, icon, r, FG, DT_CENTER);
         p.hit(r, hit);
     }
-    p.text(p.f.small, &note.0, p.r(20, y, x0 - 12, y + PW), note.1, DT_LEFT | DT_END_ELLIPSIS);
+    let tw = p.measure(p.f.small, &note.0).min(p.s(x0 - 12 - 20 - 24));
+    let chip = RECT { left: p.s(20), top: p.s(y + 4), right: p.s(20) + tw + p.s(24), bottom: p.s(y + PW - 4) };
+    p.fill(chip, R_PILL, PANEL);
+    p.text(p.f.small, &note.0, RECT { left: chip.left + p.s(12), right: chip.right - p.s(12), ..chip }, note.1, DT_LEFT | DT_END_ELLIPSIS);
     y += PW + 8;
 
     // Кто держит микрофон и камеру.

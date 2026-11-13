@@ -51,6 +51,18 @@ pub struct Update {
     pub note: Option<String>,
     /// Хук ждёт решения человека: ответить можно из чёлки (PermissionRequest у Claude Code).
     pub answerable: bool,
+    pub extra: Extra,
+}
+
+/// Подробности события для карточки сессии. Чего в событии нет, то None и остаётся прежним.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Extra {
+    /// Текущий инструмент: «Bash: cargo build».
+    pub tool: Option<String>,
+    /// Папка проекта (по ней читается ветка git).
+    pub cwd: Option<String>,
+    /// Последний ответ агента (если хук его прислал).
+    pub answer: Option<String>,
 }
 
 /// Что показать после события агента.
@@ -72,6 +84,13 @@ pub struct Agent {
     /// С какого момента агент в этом состоянии.
     pub since: Instant,
     updated: Instant,
+    /// Чем занят сейчас: «Bash: cargo build». Пусто — неизвестно.
+    pub tool: String,
+    /// Последний ответ агента. Пусто — хук его не прислал.
+    pub answer: String,
+    /// Ветка git. None — ещё не читали, пустая строка — не репозиторий.
+    pub branch: Option<String>,
+    pub cwd: String,
 }
 
 #[derive(Default)]
@@ -102,6 +121,9 @@ impl Agents {
             .filter(|n| !n.is_empty())
             .or_else(|| pos.map(|i| self.list[i].name.clone()))
             .unwrap_or_else(|| one_line(&u.id, 8));
+        // Новый запрос человека: прежние инструмент, ответ и ветка устарели.
+        let new_prompt = u.state == AgentState::Work && u.note.is_some();
+        let extra = u.extra;
         let note = u.note.map(|n| one_line(&n, MAX_NOTE));
         let changed = match pos {
             Some(i) => {
@@ -125,10 +147,26 @@ impl Agents {
                         self.list.remove(old);
                     }
                 }
-                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, updated: now });
+                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, updated: now, tool: String::new(), answer: String::new(), branch: None, cwd: String::new() });
                 true
             }
         };
+        if let Some(a) = self.list.iter_mut().find(|a| a.id == id) {
+            if new_prompt {
+                a.tool.clear();
+                a.answer.clear();
+                a.branch = None;
+            }
+            if let Some(t) = extra.tool {
+                a.tool = one_line(&t, MAX_NOTE);
+            }
+            if let Some(t) = extra.answer {
+                a.answer = one_line(&t, MAX_NOTE);
+            }
+            if let Some(c) = extra.cwd {
+                a.cwd = c;
+            }
+        }
         let text = self.list.iter().find(|a| a.id == id).map(|a| a.note.clone()).unwrap_or_default();
         match u.state {
             // Хук с ожиданием ответа показываем всегда: он мог прийти после простого уведомления.
@@ -146,6 +184,36 @@ impl Agents {
         }
     }
 
+    /// Папка агента, у которого ветка ещё не прочитана.
+    pub fn wants_branch(&self, id: &str) -> Option<String> {
+        self.list.iter().find(|a| a.id == id && a.branch.is_none() && !a.cwd.is_empty()).map(|a| a.cwd.clone())
+    }
+
+    pub fn set_branch(&mut self, id: &str, branch: String) {
+        if let Some(a) = self.list.iter_mut().find(|a| a.id == id) {
+            a.branch = Some(branch);
+        }
+    }
+
+    /// Сколько ждут разрешения и сколько работают: для сводки над списком.
+    pub fn summary(&self) -> (usize, usize) {
+        let n = |st: AgentState| self.list.iter().filter(|a| a.state == st).count();
+        (n(AgentState::Ask), n(AgentState::Work))
+    }
+
+    /// Порядок показа: сначала те, кому нужно разрешение, потом работающие, ждущие, закончившие.
+    pub fn order(&self) -> Vec<usize> {
+        let rank = |s: AgentState| match s {
+            AgentState::Ask => 0,
+            AgentState::Work => 1,
+            AgentState::Wait => 2,
+            AgentState::Done | AgentState::Gone => 3,
+        };
+        let mut idx: Vec<usize> = (0..self.list.len()).collect();
+        idx.sort_by_key(|&i| rank(self.list[i].state));
+        idx
+    }
+
     /// Убрать тех, о ком давно не слышали. true — что-то пропало.
     pub fn expire(&mut self, now: Instant) -> bool {
         let n = self.list.len();
@@ -161,6 +229,20 @@ impl Agents {
         let n = self.list.iter().filter(|a| matches!(a.state, AgentState::Work | AgentState::Ask)).count();
         (n > 0).then(|| (self.list.iter().any(|a| a.state == AgentState::Ask), n))
     }
+}
+
+/// Содержимое `.git/HEAD` → имя ветки («ref: refs/heads/main» → «main») или короткий хеш.
+pub fn branch_from_head(head: &str) -> String {
+    let h = head.trim();
+    match h.strip_prefix("ref:") {
+        Some(r) => r.trim().trim_start_matches("refs/heads/").to_string(),
+        None => h.chars().take(7).collect(),
+    }
+}
+
+/// Ветка проекта в папке cwd. Пусто — не репозиторий. Читает маленький файл: звать вне `st()`.
+pub fn read_branch(cwd: &str) -> String {
+    std::fs::read_to_string(std::path::Path::new(cwd).join(".git").join("HEAD")).map(|h| branch_from_head(&h)).unwrap_or_default()
 }
 
 /// «сейчас», «5 мин», «2 ч» — сколько агент в этом состоянии.
@@ -181,19 +263,20 @@ pub fn from_hook(json: &str) -> Option<Update> {
     let id = f.get("session_id").filter(|s| !s.is_empty())?.clone();
     // Имя агента — папка проекта.
     let name = f.get("cwd").and_then(|c| c.rsplit(['/', '\\']).find(|p| !p.is_empty())).map(str::to_string);
+    // «Bash: cargo build» — инструмент и главное из его параметров.
+    let tool = f.get("tool_name").map(|tool| {
+        let input = objs.get("tool_input").map(|o| json_strings(o)).unwrap_or_default();
+        match ["command", "file_path", "url", "pattern", "description", "prompt"].iter().find_map(|k| input.get(*k)) {
+            Some(d) => format!("{}: {}", tool, d),
+            None => tool.clone(),
+        }
+    });
+    let extra = Extra { tool: tool.clone(), cwd: f.get("cwd").cloned(), answer: f.get("last_assistant_message").cloned() };
     let (state, note) = match f.get("hook_event_name")?.as_str() {
         "UserPromptSubmit" => (AgentState::Work, f.get("prompt").cloned()),
         "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => (AgentState::Work, None),
         "PermissionRequest" => {
-            // «Bash: cargo build» — инструмент и главное из его параметров.
-            let tool = f.get("tool_name").cloned().unwrap_or_default();
-            let input = objs.get("tool_input").map(|o| json_strings(o)).unwrap_or_default();
-            let detail = ["command", "file_path", "url", "pattern", "description", "prompt"].iter().find_map(|k| input.get(*k));
-            let text = match detail {
-                Some(d) => format!("{}: {}", tool, d),
-                None => tool,
-            };
-            return Some(Update { id, name, state: AgentState::Ask, note: Some(text), answerable: true });
+            return Some(Update { id, name, state: AgentState::Ask, note: Some(tool.unwrap_or_default()), answerable: true, extra });
         }
         "Notification" => match f.get("notification_type").map(String::as_str) {
             Some("permission_prompt") | Some("elicitation_dialog") => (AgentState::Ask, f.get("message").cloned()),
@@ -204,7 +287,7 @@ pub fn from_hook(json: &str) -> Option<Update> {
         "SessionEnd" => (AgentState::Gone, None),
         _ => return None,
     };
-    Some(Update { id, name, state, note, answerable: false })
+    Some(Update { id, name, state, note, answerable: false, extra })
 }
 
 /// Строковые поля верхнего уровня JSON-объекта. Вложенные объекты и массивы пропускаются.
@@ -338,7 +421,29 @@ mod tests {
     use super::*;
 
     fn up(id: &str, state: AgentState) -> Update {
-        Update { id: id.into(), name: Some("pill".into()), state, note: None, answerable: false }
+        Update { id: id.into(), name: Some("pill".into()), state, note: None, answerable: false, extra: Extra::default() }
+    }
+
+    #[test]
+    fn branch_and_session_details() {
+        assert_eq!(branch_from_head("ref: refs/heads/feature/header\n"), "feature/header");
+        assert_eq!(branch_from_head("0123456789abcdef\n"), "0123456");
+        let now = Instant::now();
+        let mut a = Agents::default();
+        let hook = |ev: &str, rest: &str| from_hook(&format!(r#"{{"session_id":"s1","cwd":"C:\\p\\pill","hook_event_name":"{}"{}}}"#, ev, rest)).unwrap();
+        a.apply(hook("UserPromptSubmit", r#","prompt":"собери""#), now);
+        assert_eq!(a.wants_branch("s1").as_deref(), Some("C:\\p\\pill"));
+        a.set_branch("s1", "main".into());
+        a.apply(hook("PostToolUse", r#","tool_name":"Bash","tool_input":{"command":"cargo build"}"#), now);
+        assert_eq!((a.list[0].tool.as_str(), a.list[0].note.as_str(), a.wants_branch("s1")), ("Bash: cargo build", "собери", None));
+        a.apply(hook("Stop", r#","last_assistant_message":"Готово""#), now);
+        assert_eq!(a.list[0].answer, "Готово");
+        // Новый запрос сбрасывает инструмент, ответ и ветку.
+        a.apply(hook("UserPromptSubmit", r#","prompt":"ещё""#), now);
+        assert!(a.list[0].tool.is_empty() && a.list[0].answer.is_empty() && a.list[0].branch.is_none());
+        // Сначала тот, кому нужно разрешение.
+        a.apply(Update { id: "s2".into(), name: Some("site".into()), state: AgentState::Ask, note: None, answerable: false, extra: Extra::default() }, now);
+        assert_eq!((a.order(), a.summary()), (vec![1, 0], (1, 1)));
     }
 
     #[test]
@@ -359,7 +464,7 @@ mod tests {
     #[test]
     fn hooks() {
         let u = from_hook(r#"{"session_id":"s1","transcript_path":"x","cwd":"C:\\Users\\me\\projects\\pill","hook_event_name":"UserPromptSubmit","prompt":"сделай\nкрасиво"}"#).unwrap();
-        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Work, note: Some("сделай\nкрасиво".into()), answerable: false });
+        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Work, note: Some("сделай\nкрасиво".into()), answerable: false, extra: u.extra.clone() });
         let ask = from_hook(r#"{"session_id":"s1","cwd":"/home/me/app/","hook_event_name":"Notification","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}"#).unwrap();
         assert_eq!((ask.name.as_deref(), ask.state), (Some("app"), AgentState::Ask));
         assert_eq!(from_hook(r#"{"session_id":"s1","hook_event_name":"Notification","notification_type":"idle_prompt"}"#).unwrap().state, AgentState::Wait);
@@ -383,13 +488,13 @@ mod tests {
         assert!(matches!(a.apply(up("s1", AgentState::Ask), now), Some(Notice::Ask { answerable: false, .. })));
         assert_eq!(a.apply(up("s1", AgentState::Ask), now), None);
         // Хук с ожиданием ответа показываем, даже если состояние то же.
-        let hook = Update { id: "s1".into(), name: None, state: AgentState::Ask, note: Some("Bash: ls".into()), answerable: true };
+        let hook = Update { id: "s1".into(), name: None, state: AgentState::Ask, note: Some("Bash: ls".into()), answerable: true, extra: Extra::default() };
         assert_eq!(a.apply(hook, now), Some(Notice::Ask { name: "pill".into(), text: "Bash: ls".into(), answerable: true }));
-        a.apply(Update { id: "s2".into(), name: Some("site".into()), state: AgentState::Work, note: Some(" запрос \n".into()), answerable: false }, now);
+        a.apply(Update { id: "s2".into(), name: Some("site".into()), state: AgentState::Work, note: Some(" запрос \n".into()), answerable: false, extra: Extra::default() }, now);
         assert_eq!(a.attention(), Some((true, 2)));
         assert_eq!(a.list[1].note, "запрос");
         // Событие без имени и заметки сохраняет старые; «ждёт ответа» молчит.
-        assert_eq!(a.apply(Update { id: "s2".into(), name: None, state: AgentState::Done, note: None, answerable: false }, now), Some(Notice::Done { name: "site".into(), text: "запрос".into() }));
+        assert_eq!(a.apply(Update { id: "s2".into(), name: None, state: AgentState::Done, note: None, answerable: false, extra: Extra::default() }, now), Some(Notice::Done { name: "site".into(), text: "запрос".into() }));
         assert_eq!(a.apply(up("s2", AgentState::Wait), now), None);
         // Разрешили в окне агента: карточку убрать.
         assert_eq!(a.apply(up("s1", AgentState::Work), now), Some(Notice::Resolved));
@@ -408,7 +513,7 @@ mod tests {
     #[test]
     fn permission_hook() {
         let u = from_hook(r#"{"session_id":"s1","cwd":"/p/pill","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"cargo build","description":"Сборка"}}"#).unwrap();
-        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Ask, note: Some("Bash: cargo build".into()), answerable: true });
+        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Ask, note: Some("Bash: cargo build".into()), answerable: true, extra: u.extra.clone() });
         let u = from_hook(r#"{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Mystery","tool_input":{"n":1}}"#).unwrap();
         assert_eq!(u.note.as_deref(), Some("Mystery"));
     }

@@ -13,7 +13,7 @@ use crate::feat::sysmon::{fmt_bytes, fmt_rate, Snapshot, HISTORY, SNAPSHOT};
 const WARN_AT: f32 = 85.0;
 /// Левая колонка: две карточки в ряд.
 const CARD_W: i32 = 144;
-const CARD_H: i32 = 96;
+const CARD_H: i32 = 116;
 const TOP: i32 = 56;
 /// Где начинается правая колонка.
 const RIGHT_X: i32 = 20 + 2 * CARD_W + 8 + 14;
