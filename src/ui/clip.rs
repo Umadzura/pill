@@ -34,7 +34,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32) {
         let (h_row, h_pin, h_del) = (Hit::Clip(ClipHit::Row(idx)), Hit::Clip(ClipHit::Pin(idx)), Hit::Clip(ClipHit::Del(idx)));
         let hov = p.hovered(h_row) || p.hovered(h_pin) || p.hovered(h_del);
         if hov || (s.input.active && s.input.sel == n) {
-            p.fill(row, 10, HOVER);
+            p.fill(row, R_ROW, HOVER);
         }
         p.hit(row, h_row);
         let tr = RECT { left: row.left + p.s(12), right: row.right - p.s(64), ..row };
@@ -54,6 +54,6 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32) {
     }
     if view.len() > scroll + ROWS {
         let more = format!("ещё {} ↓", view.len() - scroll - ROWS);
-        p.text(p.f.small, &more, RECT { left: 0, top: p.s(320), right: w - p.s(28), bottom: p.s(336) }, DIM, DT_RIGHT);
+        p.text(p.f.small, &more, RECT { left: 0, top: p.s(EXPANDED_H - 22), right: w - p.s(28), bottom: p.s(EXPANDED_H - 6) }, DIM, DT_RIGHT);
     }
 }

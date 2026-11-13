@@ -15,7 +15,10 @@ use crate::feat::clip::{self, ClipHit};
 use crate::feat::ctl::{self, CtlHit};
 use crate::feat::music::{self, MusicHit};
 use crate::feat::sysmon::{self, LoadAction};
+use crate::feat::agents;
 use crate::feat::api;
+use crate::feat::notifs;
+use crate::feat::peek::{self, Peek, PeekHit, PeekKind};
 use crate::feat::{cmd, osd, timers};
 use crate::ids::*;
 use crate::{input, pill, shell, sys, ui};
@@ -27,14 +30,17 @@ pub enum Tab {
     Commands,
     Controls,
     System,
+    Feed,
 }
 
+/// Вкладки в шапке. «Система» — группа из двух страниц (`Tab::Controls` «Управление» и
+/// `Tab::System` «Монитор»), между ними переключатель под шапкой.
 pub const TABS: [(Tab, &str); 5] = [
     (Tab::Music, "Музыка"),
     (Tab::Clipboard, "Буфер"),
     (Tab::Commands, "Команды"),
-    (Tab::Controls, "Управление"),
-    (Tab::System, "Система"),
+    (Tab::Controls, "Система"),
+    (Tab::Feed, "События"),
 ];
 
 /// Кликабельные зоны. Заполняются при отрисовке, по ним же ищем клик и наведение.
@@ -51,6 +57,12 @@ pub enum Hit {
     /// Строка результата командной строки.
     Cmd(usize),
     Ctl(CtlHit),
+    /// Крестик у агента во вкладке «События»: убрать из списка.
+    AgentDrop(usize),
+    /// Крестик у уведомления: убрать его и из центра уведомлений Windows (id уведомления).
+    NotifDrop(u32),
+    /// Карточка из чёлки: кнопки и сама карточка.
+    Peek(PeekHit),
     Alarm,
 }
 
@@ -79,8 +91,14 @@ pub struct State {
     pub load: sysmon::LoadWatch,
     /// Задачи от скриптов (локальный API).
     pub tasks: api::Tasks,
+    /// ИИ-агенты, приславшие события (локальный API).
+    pub agents: agents::Agents,
     /// Воркер сейчас собирает снимки для вкладки «Система».
     pub sys_sampling: bool,
+    /// Чётный/нечётный секундный тик: чужие уведомления перечитываем через раз, точка агентов «дышит».
+    pub notif_flip: bool,
+    /// Карточка из чёлки (уведомление, просьба агента), если показана.
+    pub peek: Option<Peek>,
 }
 
 thread_local! {
@@ -106,7 +124,10 @@ pub unsafe fn init_state() {
         osd: osd::Osd::new(),
         load: sysmon::LoadWatch::default(),
         tasks: api::Tasks::default(),
+        agents: agents::Agents::default(),
         sys_sampling: false,
+        notif_flip: false,
+        peek: None,
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(s));
 }
@@ -151,6 +172,20 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
             Redraw::None
         }
         Hit::Ctl(h) => ctl::on_hit(hwnd, h),
+        Hit::AgentDrop(i) => {
+            st(|s| {
+                if i < s.agents.list.len() {
+                    s.agents.list.remove(i);
+                }
+            });
+            Redraw::Content
+        }
+        Hit::NotifDrop(id) => {
+            notifs::INBOX.lock().unwrap().forget(id);
+            winrt::send(winrt::Job::NotifDrop(id));
+            Redraw::Content
+        }
+        Hit::Peek(h) => peek::on_hit(hwnd, h),
         Hit::Alarm => {
             st(|s| s.timers.dismiss());
             Redraw::Layout
@@ -170,12 +205,18 @@ unsafe fn on_tab(hwnd: HWND, t: Tab) -> Redraw {
     }
     st(|s| {
         s.shell.tab = t;
+        if matches!(t, Tab::Controls | Tab::System) {
+            s.shell.sys_page = t;
+        }
         s.input.sel = 0;
         s.input.scroll = 0;
         s.input.text.clear();
     });
     if t == Tab::Controls {
         ctl::refresh();
+    }
+    if t == Tab::Feed {
+        notifs_poll();
     }
     sys_sampling_tick();
     Redraw::Content
@@ -192,7 +233,7 @@ unsafe fn on_wheel(hwnd: HWND, delta: i32) {
             st(|s| input::scroll_clip(s, notches));
             Redraw::Content
         }
-        Tab::Commands | Tab::System => Redraw::None,
+        Tab::Commands | Tab::System | Tab::Feed => Redraw::None,
     };
     redraw(hwnd, r);
 }
@@ -210,14 +251,47 @@ fn sys_sampling_tick() {
     }
 }
 
+/// Попросить воркер перечитать чужие уведомления (если к ним есть доступ).
+fn notifs_poll() {
+    if !notifs::OFF.load(std::sync::atomic::Ordering::Relaxed) {
+        winrt::send(winrt::Job::Notifs);
+    }
+}
+
+/// WM_APP_NOTIF: пришло новое уведомление или список поменялся.
+unsafe fn on_notifs(hwnd: HWND) {
+    let fresh = notifs::INBOX.lock().unwrap().fresh.take();
+    match fresh {
+        Some(n) => {
+            let pk = Peek { kind: PeekKind::Notif, app: n.app, title: n.title, body: n.body };
+            peek::show(hwnd, pk, Some(notifs::PEEK_MS));
+        }
+        None => {
+            if st(|s| s.shell.expanded && s.shell.tab == Tab::Feed) {
+                let _ = InvalidateRect(hwnd, None, false);
+            }
+        }
+    }
+}
+
 unsafe fn on_tick(hwnd: HWND) {
     // Два дешёвых счётчика для предупреждения о нагрузке — вне st().
     let (cpu, mem) = (sys::sysinfo::cpu_times(), sys::sysinfo::memory());
     let now = Instant::now();
-    let (beep, confirm_gone, load) = st(|s| {
+    let (beep, confirm_gone, load, poll) = st(|s| {
         s.tasks.expire(now);
-        (s.timers.tick(now), s.ctl.tick(), s.load.tick(cpu, mem))
+        s.agents.expire(now);
+        s.notif_flip = !s.notif_flip;
+        // В полноэкранной игре пилюли не видно: уведомления дочитаем, когда вернёмся.
+        (s.timers.tick(now), s.ctl.tick(), s.load.tick(cpu, mem), s.notif_flip && s.shell.visible())
     });
+    if poll {
+        notifs_poll();
+    }
+    // Хуки агентов, которым не ответили вовремя: убрать их карточки.
+    for id in crate::bg::api::expire() {
+        peek::resolve(hwnd, &id);
+    }
     if beep {
         let _ = MessageBeep(MB_ICONEXCLAMATION);
     }
@@ -229,12 +303,17 @@ unsafe fn on_tick(hwnd: HWND) {
     sys_sampling_tick();
     shell::fullscreen_tick(hwnd);
     // Перерисовываем только если что-то видимое поменялось.
-    let (changed, expanded, live) =
-        st(|s| (pill::text(s) != s.shell.last_collapsed, s.shell.expanded, !s.timers.list.is_empty() || s.ctl.confirm.is_some()));
+    // «События» раз в секунду обновляют «5 мин» у агентов.
+    let (changed, expanded, live, pulse) = st(|s| {
+        let live = !s.timers.list.is_empty() || s.ctl.confirm.is_some() || s.shell.tab == Tab::Feed;
+        // Точка агентов в свёрнутой чёлке «дышит» раз в секунду.
+        let pulse = !s.shell.expanded && s.peek.is_none() && s.agents.attention().is_some();
+        (pill::text(s) != s.shell.last_collapsed, s.shell.expanded, live, pulse)
+    });
     // Пока играет музыка, раз в секунду двигаются прогресс и эквалайзер.
     if changed {
         shell::layout(hwnd);
-    } else if (expanded && (live || confirm_gone)) || winrt::playing() {
+    } else if (expanded && (live || confirm_gone)) || winrt::playing() || pulse {
         let _ = InvalidateRect(hwnd, None, false);
     }
 }
@@ -251,8 +330,12 @@ unsafe fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
         let _ = TrackMouseEvent(&mut tme);
     }
     if !st(|s| s.shell.expanded) {
-        shell::set_expanded(hwnd, true);
-        return;
+        // Над карточкой панель не раскрываем: на ней кнопки. Пока курсор на ней, она не прячется.
+        if st(|s| s.peek.is_none()) {
+            shell::set_expanded(hwnd, true);
+            return;
+        }
+        let _ = KillTimer(hwnd, TIMER_PEEK);
     }
     let (x, y) = (loword(lparam), hiword(lparam));
     let changed = st(|s| {
@@ -270,6 +353,10 @@ unsafe fn on_mouse_leave(hwnd: HWND) {
         s.hover = None;
         s.input.active
     });
+    // Курсор ушёл с карточки: уведомление скоро прячем, просьба о разрешении ждёт ответа.
+    if st(|s| s.peek.as_ref().is_some_and(|p| !p.answerable())) {
+        SetTimer(hwnd, TIMER_PEEK, 2500, None);
+    }
     // Пока печатаешь, панель не прячется от ухода курсора.
     if !active {
         SetTimer(hwnd, TIMER_COLLAPSE, COLLAPSE_DELAY_MS, None);
@@ -281,6 +368,8 @@ unsafe fn on_timer(hwnd: HWND, id: usize) {
     match id {
         TIMER_CLOCK => on_tick(hwnd),
         TIMER_COLLAPSE => shell::on_collapse_timer(hwnd),
+        TIMER_ANIM => shell::on_anim_timer(hwnd),
+        TIMER_PEEK => peek::hide(hwnd),
         TIMER_PASTE => input::on_paste_timer(hwnd),
         TIMER_SHOT => {
             let _ = KillTimer(hwnd, TIMER_SHOT);
@@ -351,6 +440,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         WM_APP_PRIVACY => shell::layout(hwnd),
         WM_APP_VIZ => ui::viz::on_frame(hwnd),
         WM_APP_API => api::on_events(hwnd),
+        WM_APP_NOTIF => on_notifs(hwnd),
         WM_APP_SYS => {
             let warn = sysmon::LOAD_WARN.lock().unwrap().take();
             if let Some(text) = warn {

@@ -17,6 +17,10 @@ features = [
     "Storage_Streams",
     "Graphics_Imaging",
     "Devices_Radios",
+    # Чужие уведомления (тосты Telegram и других программ) для вкладки «События»
+    "ApplicationModel",
+    "UI_Notifications",
+    "UI_Notifications_Management",
     # Свои COM-колбэки (события громкости)
     "implement",
     # Win32

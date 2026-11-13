@@ -1,5 +1,5 @@
-//! Фоновый COM/WinRT-поток (MTA): текущий трек (GSMTC), обложка, Wi-Fi/Bluetooth, яркость экрана.
-//! Ничего не опрашивает: просыпается только по событиям системы или по команде из UI.
+//! Фоновый COM/WinRT-поток (MTA): текущий трек (GSMTC), обложка, Wi-Fi/Bluetooth, яркость экрана,
+//! чужие уведомления. Сам ничего не опрашивает: просыпается только по событиям системы или по команде из UI.
 //! Здесь всё, что блокирует дольше 50 мс (`.get()`, WMI, DDC/CI).
 
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -15,9 +15,11 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
+use crate::feat::notifs::{self, Notif};
 use crate::feat::sysmon::{self, Load, Sampler, WarnProbe};
-use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_RADIO, WM_APP_SYS};
+use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_NOTIF, WM_APP_RADIO, WM_APP_SYS};
 use crate::sys::display::Displays;
+use crate::sys::toasts;
 
 const ART: u32 = 128;
 
@@ -120,6 +122,10 @@ pub enum Job {
     LoadProbe,
     /// Порог пройден: приготовить текст предупреждения.
     LoadWarn(Load),
+    /// Перечитать чужие уведомления (раз в 2 с с секундного тика и при открытии «Событий»).
+    Notifs,
+    /// Убрать уведомление из центра уведомлений Windows и перечитать.
+    NotifDrop(u32),
 }
 
 static TX: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
@@ -220,6 +226,7 @@ fn worker(rx: mpsc::Receiver<Job>) {
     let mut displays = Displays::new();
     let mut sampler: Option<Sampler> = None;
     let mut probe: Option<WarnProbe> = None;
+    let mut listener: Option<toasts::Listener> = None;
 
     send(Job::Refresh);
     while let Ok(first) = rx.recv() {
@@ -319,6 +326,29 @@ fn worker(rx: mpsc::Receiver<Job>) {
                     let p = probe.take().unwrap_or_else(WarnProbe::take);
                     *sysmon::LOAD_WARN.lock().unwrap() = Some(p.finish(kind));
                     notify(WM_APP_SYS);
+                }
+                Job::Notifs | Job::NotifDrop(_) => {
+                    // Открываем один раз; нет доступа — больше не пробуем и UI перестаёт просить.
+                    if listener.is_none() && !notifs::OFF.load(Ordering::Relaxed) {
+                        listener = toasts::Listener::open();
+                        if listener.is_none() {
+                            notifs::OFF.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    if let Some(l) = &mut listener {
+                        if let Job::NotifDrop(id) = job {
+                            l.remove(id);
+                        }
+                        if let Some(list) = l.read() {
+                            let cur = list.into_iter().map(Notif::from_toast).collect();
+                            let mut inbox = notifs::INBOX.lock().unwrap();
+                            let wake = inbox.update(cur) || inbox.fresh.is_some();
+                            drop(inbox);
+                            if wake {
+                                notify(WM_APP_NOTIF);
+                            }
+                        }
+                    }
                 }
                 Job::SetBrightness(pct) => {
                     displays.set(pct);

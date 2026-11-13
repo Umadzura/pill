@@ -32,43 +32,9 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     }
     let art = p.r(24, 62, 156, 194);
     match &m.art {
-        Some(a) => {
-            let rg = CreateRoundRectRgn(art.left, art.top, art.right + 1, art.bottom + 1, p.s(18), p.s(18));
-            SelectClipRgn(p.hdc, rg);
-            SetStretchBltMode(p.hdc, HALFTONE);
-            let _ = SetBrushOrgEx(p.hdc, 0, 0, None);
-            let bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: a.w,
-                    biHeight: -a.h,
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            StretchDIBits(
-                p.hdc,
-                art.left,
-                art.top,
-                art.right - art.left,
-                art.bottom - art.top,
-                0,
-                0,
-                a.w,
-                a.h,
-                Some(a.px.as_ptr() as *const _),
-                &bmi,
-                DIB_RGB_COLORS,
-                SRCCOPY,
-            );
-            SelectClipRgn(p.hdc, None);
-            let _ = DeleteObject(rg);
-        }
+        Some(a) => p.art(art, a, R_TILE),
         None => {
-            p.fill(art, 18, PANEL);
+            p.fill(art, R_TILE, PANEL);
             p.text(p.f.icon_big, I_MUSIC, art, DIM, DT_CENTER);
         }
     }
@@ -86,7 +52,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
 
     p.icon_button(p.r(170, 146, 214, 190), I_PREV, Hit::Music(MusicHit::Prev), false);
     let play = p.r(220, 142, 272, 194);
-    p.fill(play, 52, rgb(44, 44, 54));
+    p.fill(play, 52, HOVER);
     p.icon_button(play, if playing { I_PAUSE } else { I_PLAY }, Hit::Music(MusicHit::Play), true);
     p.icon_button(p.r(278, 146, 322, 190), I_NEXT, Hit::Music(MusicHit::Next), false);
     if playing {

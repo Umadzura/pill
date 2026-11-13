@@ -3,11 +3,12 @@
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 
+use super::mascot;
 use super::paint::*;
 use crate::app::State;
 use crate::bg::winrt;
 use crate::feat::osd::Flash;
-use crate::pill::{self, DOT, EQ_W};
+use crate::pill::{self, ART, DOT, EQ_W};
 
 pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
     if pill::shows_level(s) {
@@ -31,23 +32,29 @@ pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
         _ => FG,
     };
     let text = pill::text(s);
-    let lead = p.s(pill::lead_width(s));
-    if lead == 0 {
+    let (left, right) = (p.s(pill::left_width(s)), p.s(pill::right_width(s)));
+    if left + right == 0 {
         p.text(p.f.bold, &text, rc, color, DT_CENTER);
     } else {
-        // Значки + текст одним блоком по центру.
-        let total = lead + p.measure(p.f.bold, &text);
-        let x = (rc.right - total) / 2;
-        draw_lead(p, x, rc.bottom / 2);
-        p.text(p.f.bold, &text, RECT { left: x + lead, ..rc }, color, DT_LEFT);
+        // Как в чёлке мака: слева обложка, по центру текст, справа полоски. Всё одним блоком по центру.
+        let tw = p.measure(p.f.bold, &text);
+        let x = (rc.right - (left + tw + right)) / 2;
+        let mid = rc.bottom / 2;
+        draw_left(p, s, x, mid);
+        p.text(p.f.bold, &text, RECT { left: x + left, ..rc }, color, DT_LEFT);
+        if right > 0 {
+            // Настоящий спектр того, что играет (feat::viz), 4 столбика.
+            let vx = x + left + tw + p.s(10);
+            p.viz(RECT { left: vx, top: mid - p.s(7), right: vx + p.s(EQ_W), bottom: mid + p.s(7) }, 4);
+        }
     }
     if pill::plain(s) {
         progress(p, rc);
     }
 }
 
-/// Значки слева от текста: точки микрофона/камеры и полоски музыки.
-unsafe fn draw_lead(p: &mut Painter, mut x: i32, mid: i32) {
+/// Слева от текста: точки микрофона/камеры и мини-обложка трека.
+unsafe fn draw_left(p: &mut Painter, s: &State, mut x: i32, mid: i32) {
     let (mic, cam) = pill::privacy_dots();
     for (on, c) in [(mic, MIC), (cam, CAM)] {
         if on {
@@ -59,10 +66,20 @@ unsafe fn draw_lead(p: &mut Painter, mut x: i32, mid: i32) {
     if mic || cam {
         x += p.s(4);
     }
-    if winrt::playing() {
-        // Настоящий спектр того, что играет (feat::viz), 4 столбика.
-        let r = RECT { left: x, top: mid - p.s(7), right: x + p.s(EQ_W), bottom: mid + p.s(7) };
-        p.viz(r, 4);
+    if let Some(a) = pill::mini_art() {
+        let side = p.s(ART);
+        p.art(RECT { left: x, top: mid - side / 2, right: x + side, bottom: mid - side / 2 + side }, &a, 10);
+        x += p.s(ART + 10);
+    }
+    // Агенты: маскот главного из них (кому нужно разрешение, иначе работающий), число — если их больше одного.
+    if let (Some((_, n)), Some(a)) = (s.agents.attention(), mascot::lead(&s.agents.list)) {
+        let px = p.s(2);
+        mascot::draw(p, x, mid - px * mascot::H / 2, px, a, s.notif_flip);
+        if n > 1 {
+            let tx = x + px * mascot::W + p.s(4);
+            let r = RECT { left: tx, top: 0, right: tx + p.s(16), bottom: mid * 2 };
+            p.text(p.f.small, &n.to_string(), r, DIM, DT_LEFT);
+        }
     }
 }
 

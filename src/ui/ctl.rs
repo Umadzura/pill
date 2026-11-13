@@ -43,7 +43,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
             None if p.hovered(hit) => PANEL,
             None => OFF_DIM,
         };
-        p.fill(r, 14, bg);
+        p.fill(r, R_TILE, bg);
         let fg = if state.is_some() { FG } else { DIM };
         p.text(p.f.icon_big, icon, RECT { bottom: r.top + p.s(46), top: r.top + p.s(8), ..r }, fg, DT_CENTER);
         let lr = RECT { left: r.left + p.s(6), right: r.right - p.s(6), top: r.top + p.s(46), bottom: r.bottom - p.s(8) };
@@ -74,7 +74,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         let r = RECT { left: x, top: p.s(y), right: x + bw, bottom: p.s(y + 46) };
         let hit = Hit::Ctl(CtlHit::Power(*pw));
         let confirming = s.ctl.confirming(*pw);
-        p.fill(r, 14, if confirming { DANGER } else if p.hovered(hit) { HOVER } else { PANEL });
+        p.fill(r, R_TILE, if confirming { DANGER } else if p.hovered(hit) { HOVER } else { PANEL });
         let label = if confirming { "Точно? Ещё раз" } else { label };
         p.text(p.f.icon, icon, RECT { left: r.left + p.s(12), right: r.left + p.s(36), ..r }, FG, DT_LEFT);
         p.text(p.f.small, label, RECT { left: r.left + p.s(36), right: r.right - p.s(6), ..r }, FG, DT_LEFT | DT_END_ELLIPSIS);
