@@ -47,6 +47,40 @@ pub fn toggle_mute() {
     }
 }
 
+/// PKEY_Device_FriendlyName: «Наушники (WH-1000XM5)».
+const FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY { fmtid: windows::core::GUID::from_u128(0xa45c254e_df1c_4efd_8020_67d146a850e0), pid: 14 };
+
+/// Имя устройства вывода по умолчанию.
+pub fn output_name() -> Option<String> {
+    unsafe {
+        let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+        let dev = en.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
+        let store = dev.OpenPropertyStore(STGM_READ).ok()?;
+        let name = store.GetValue(&FRIENDLY_NAME).ok()?.to_string();
+        (!name.is_empty()).then_some(name)
+    }
+}
+
+unsafe fn mic() -> Option<IAudioEndpointVolume> {
+    let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+    let dev = en.GetDefaultAudioEndpoint(eCapture, eConsole).ok()?;
+    dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None).ok()
+}
+
+/// Микрофон по умолчанию выключен? None — микрофона нет.
+pub fn mic_muted() -> Option<bool> {
+    unsafe { mic()?.GetMute().ok().map(|m| m.as_bool()) }
+}
+
+pub fn toggle_mic() {
+    unsafe {
+        if let Some(v) = mic() {
+            let m = v.GetMute().map(|m| m.as_bool()).unwrap_or(false);
+            let _ = v.SetMute(!m, std::ptr::null());
+        }
+    }
+}
+
 // ---------- события ----------
 
 fn post(hwnd: isize, msg: u32, w: usize, l: isize) {

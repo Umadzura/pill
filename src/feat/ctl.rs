@@ -33,6 +33,8 @@ pub enum Pw {
 pub enum CtlHit {
     Toggle(Ctl),
     Power(Pw),
+    /// Кнопка «Выключить / включить микрофон».
+    MicMute,
 }
 
 /// Состояние плиток, прочитанное при раскрытии панели (быстрое; VPN читает воркер — `winrt::VPN`).
@@ -40,6 +42,10 @@ pub enum CtlHit {
 pub struct Snapshot {
     pub volume: Option<(f32, bool)>,
     pub dark: Option<bool>,
+    /// Имя устройства вывода звука.
+    pub out_dev: Option<String>,
+    /// Микрофон по умолчанию выключен (None — микрофона нет).
+    pub mic_muted: Option<bool>,
 }
 
 #[derive(Default)]
@@ -67,7 +73,7 @@ impl CtlState {
 
 /// Перечитать плитки. Радио, VPN и яркость читает воркер и сам пришлёт WM_APP_RADIO / WM_APP_BRIGHT.
 pub fn refresh() {
-    let snap = Snapshot { volume: sys::audio::volume(), dark: sys::theme::dark() };
+    let snap = Snapshot { volume: sys::audio::volume(), dark: sys::theme::dark(), out_dev: sys::audio::output_name(), mic_muted: sys::audio::mic_muted() };
     st(|s| s.ctl.snap = snap);
     winrt::send(Job::Radios);
     winrt::send(Job::Vpn);
@@ -115,6 +121,11 @@ pub unsafe fn on_hit(hwnd: HWND, h: CtlHit) -> Redraw {
     match h {
         CtlHit::Toggle(c) => toggle(hwnd, c),
         CtlHit::Power(p) => power(hwnd, p),
+        CtlHit::MicMute => {
+            sys::audio::toggle_mic();
+            refresh();
+            Redraw::Content
+        }
     }
 }
 

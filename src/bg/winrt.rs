@@ -80,6 +80,8 @@ pub struct Radios {
 }
 
 pub static RADIOS: Mutex<Radios> = Mutex::new(Radios { wifi: None, bt: None });
+/// Имя подключённой сети Wi-Fi (читается вместе с радио).
+pub static WIFI_NAME: Mutex<Option<String>> = Mutex::new(None);
 
 /// VPN-профиль: (имя, подключён). None — профилей нет. Читает воркер: pbk-файлы и RAS API не для UI-потока.
 pub static VPN: Mutex<Option<(String, bool)>> = Mutex::new(None);
@@ -378,6 +380,18 @@ fn read_radios(radios: &mut Vec<Radio>) {
         }
     }
     *RADIOS.lock().unwrap() = out;
+    *WIFI_NAME.lock().unwrap() = wifi_name();
+}
+
+/// Имя сети Wi-Fi, через которую идёт интернет. None — кабель или нет подключения.
+fn wifi_name() -> Option<String> {
+    use windows::Networking::Connectivity::NetworkInformation;
+    let p = NetworkInformation::GetInternetConnectionProfile().ok()?;
+    if !p.IsWlanConnectionProfile().ok()? {
+        return None;
+    }
+    let ssid = p.WlanConnectionProfileDetails().ok()?.GetConnectedSsid().ok()?.to_string();
+    (!ssid.is_empty()).then_some(ssid)
 }
 
 fn refresh(mgr: &GlobalSystemMediaTransportControlsSessionManager, sub: &mut Option<Sub>, art_key: &mut String) {
