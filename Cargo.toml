@@ -17,6 +17,8 @@ features = [
     "Storage_Streams",
     "Graphics_Imaging",
     "Devices_Radios",
+    # Имя сети Wi-Fi для плитки в «Управлении»
+    "Networking_Connectivity",
     # Чужие уведомления (тосты Telegram и других программ) для вкладки «События»
     "ApplicationModel",
     "UI_Notifications",

@@ -27,6 +27,11 @@ fn word(state: Option<bool>, on: &str, off: &str, none: &str) -> String {
 
 pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     let radios = *winrt::RADIOS.lock().unwrap();
+    let wifi_name = winrt::WIFI_NAME.lock().unwrap().clone();
+    let wifi_sub = match (radios.wifi, wifi_name) {
+        (Some(true), Some(name)) => name,
+        (state, _) => word(state, "включён", "выключен", "нет адаптера"),
+    };
     let snap = &s.ctl.snap;
     let vpn = winrt::VPN.lock().unwrap().clone();
     let vpn_on = vpn.as_ref().map(|v| v.1);
@@ -39,7 +44,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     };
     // (плитка, значок, название, состояние словами, включено / выключено / недоступно)
     let tiles: [(Ctl, &str, String, String, Option<bool>); 6] = [
-        (Ctl::Wifi, I_WIFI, "Wi-Fi".into(), word(radios.wifi, "включён", "выключен", "нет адаптера"), radios.wifi),
+        (Ctl::Wifi, I_WIFI, "Wi-Fi".into(), wifi_sub, radios.wifi),
         (Ctl::Bt, I_BT, "Bluetooth".into(), word(radios.bt, "включён", "выключен", "нет адаптера"), radios.bt),
         (Ctl::Vpn, I_VPN, vpn_label, word(vpn_on, "подключён", "отключён", "не настроен"), vpn_on),
         (Ctl::Dark, I_THEME, "Тема".into(), word(snap.dark, "тёмная", "светлая", "недоступно"), snap.dark),
@@ -121,9 +126,24 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     if !u.cam.is_empty() {
         parts.push(format!("Камера: {}", u.cam.join(", ")));
     }
+    // Кнопка микрофона: пока его кто-то держит или пока он выключен (чтобы было чем включить обратно).
+    let mut text_right = EXPANDED_W - 20;
+    if let Some(off) = snap.mic_muted {
+        if off || !u.mic.is_empty() {
+            let r = p.r(EXPANDED_W - 20 - 160, y - 2, EXPANDED_W - 20, y + 22);
+            let hit = Hit::Ctl(CtlHit::MicMute);
+            p.fill(r, R_PILL, if off { DANGER } else if p.hovered(hit) { HOVER } else { PANEL });
+            p.text(p.f.small, if off { "Включить микрофон" } else { "Выключить микрофон" }, r, FG, DT_CENTER);
+            p.hit(r, hit);
+            text_right -= 170;
+            if off && u.mic.is_empty() {
+                parts.insert(0, "Микрофон выключен".to_string());
+            }
+        }
+    }
     if !parts.is_empty() {
         let c = if u.cam.is_empty() { MIC } else { CAM };
-        p.text(p.f.small, &format!("●  {}", parts.join("   ·   ")), p.r(20, y, EXPANDED_W - 20, y + 20), c, DT_LEFT | DT_END_ELLIPSIS);
+        p.text(p.f.small, &format!("●  {}", parts.join("   ·   ")), p.r(20, y, text_right, y + 20), c, DT_LEFT | DT_END_ELLIPSIS);
     }
     p.hint(w, h, "Колесо — громкость, над яркостью — яркость · Нет плитки? Клик откроет настройки");
 }
