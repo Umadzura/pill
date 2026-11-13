@@ -57,7 +57,12 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     p.icon_button(p.r(294, 154, 338, 198), I_NEXT, Hit::Music(MusicHit::Next), false);
     // Куда играет звук.
     if let Some(dev) = &s.ctl.snap.out_dev {
-        p.text(p.f.small, dev, p.r(352, 166, EXPANDED_W - 24, 186), DIM, DT_RIGHT | DT_END_ELLIPSIS);
+        let tw = p.measure(p.f.small, dev).min(p.s(180));
+        let right = p.s(EXPANDED_W - 24);
+        let chip = RECT { left: right - tw - p.s(44), top: p.s(164), right, bottom: p.s(188) };
+        p.fill(chip, R_PILL, PANEL);
+        p.text(p.f.icon, I_VOL, RECT { left: chip.left + p.s(8), right: chip.left + p.s(30), ..chip }, DIM, DT_LEFT);
+        p.text(p.f.small, dev, RECT { left: chip.left + p.s(32), right: chip.right - p.s(10), ..chip }, DIM, DT_LEFT | DT_END_ELLIPSIS);
     }
     // Спектр на всю ширину под перемоткой: раньше нижняя треть панели пустовала.
     if playing {

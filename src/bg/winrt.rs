@@ -383,15 +383,24 @@ fn read_radios(radios: &mut Vec<Radio>) {
     *WIFI_NAME.lock().unwrap() = wifi_name();
 }
 
-/// Имя сети Wi-Fi, через которую идёт интернет. None — кабель или нет подключения.
+/// Имя подключённой сети Wi-Fi. None — кабель или нет подключения.
+/// Перебираем все профили: «профиль интернета» при включённом VPN — это туннель, а не Wi-Fi.
 fn wifi_name() -> Option<String> {
-    use windows::Networking::Connectivity::NetworkInformation;
-    let p = NetworkInformation::GetInternetConnectionProfile().ok()?;
-    if !p.IsWlanConnectionProfile().ok()? {
-        return None;
+    use windows::Networking::Connectivity::{NetworkConnectivityLevel, NetworkInformation};
+    let list = NetworkInformation::GetConnectionProfiles().ok()?;
+    for p in list {
+        if !p.IsWlanConnectionProfile().unwrap_or(false) {
+            continue;
+        }
+        if p.GetNetworkConnectivityLevel().map(|l| l == NetworkConnectivityLevel::None).unwrap_or(true) {
+            continue;
+        }
+        let ssid = p.WlanConnectionProfileDetails().and_then(|d| d.GetConnectedSsid()).map(|s| s.to_string()).unwrap_or_default();
+        if !ssid.is_empty() {
+            return Some(ssid);
+        }
     }
-    let ssid = p.WlanConnectionProfileDetails().ok()?.GetConnectedSsid().ok()?.to_string();
-    (!ssid.is_empty()).then_some(ssid)
+    None
 }
 
 fn refresh(mgr: &GlobalSystemMediaTransportControlsSessionManager, sub: &mut Option<Sub>, art_key: &mut String) {

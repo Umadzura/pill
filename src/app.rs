@@ -57,6 +57,8 @@ pub enum Hit {
     /// Строка результата командной строки.
     Cmd(usize),
     Ctl(CtlHit),
+    /// Переключатель в «Событиях»: false — агенты, true — уведомления.
+    FeedPage(bool),
     /// Крестик у агента во вкладке «События»: убрать из списка.
     AgentDrop(usize),
     /// Крестик у уведомления: убрать его и из центра уведомлений Windows (id уведомления).
@@ -99,6 +101,9 @@ pub struct State {
     pub notif_flip: bool,
     /// Карточка из чёлки (уведомление, просьба агента), если показана.
     pub peek: Option<Peek>,
+    /// «События»: открыта страница уведомлений (иначе агенты) и с какой карточки агентов начинать.
+    pub feed_notifs: bool,
+    pub feed_scroll: usize,
     /// Настройки из `%APPDATA%\Pill\settings.txt`.
     pub settings: crate::feat::settings::Settings,
 }
@@ -130,6 +135,8 @@ pub unsafe fn init_state() {
         sys_sampling: false,
         notif_flip: false,
         peek: None,
+        feed_notifs: false,
+        feed_scroll: 0,
         settings: crate::feat::settings::Settings::load(),
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(s));
@@ -175,6 +182,10 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
             Redraw::None
         }
         Hit::Ctl(h) => ctl::on_hit(hwnd, h),
+        Hit::FeedPage(notifs_page) => {
+            st(|s| s.feed_notifs = notifs_page);
+            Redraw::Content
+        }
         Hit::AgentDrop(i) => {
             st(|s| {
                 if i < s.agents.list.len() {
@@ -237,7 +248,12 @@ unsafe fn on_wheel(hwnd: HWND, delta: i32) {
             st(|s| input::scroll_clip(s, notches));
             Redraw::Content
         }
-        Tab::Commands | Tab::System | Tab::Feed => Redraw::None,
+        Tab::Feed => {
+            // Колесо листает карточки агентов; лишнее обрезает отрисовка.
+            st(|s| s.feed_scroll = (s.feed_scroll as i32 - notches).clamp(0, s.agents.list.len() as i32) as usize);
+            Redraw::Content
+        }
+        Tab::Commands | Tab::System => Redraw::None,
     };
     redraw(hwnd, r);
 }
