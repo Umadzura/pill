@@ -8,7 +8,7 @@ use super::paint::*;
 use crate::app::State;
 use crate::bg::winrt;
 use crate::feat::osd::Flash;
-use crate::pill::{self, ART, DOT, EQ_W};
+use crate::pill::{self, Lead, Tone, ART, DOT, EQ_W};
 
 pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
     if pill::shows_level(s) {
@@ -25,61 +25,70 @@ pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
         }
         return;
     }
-    let color = match (&s.timers.alarm, &s.osd.flash) {
-        (Some(_), _) => ACCENT,
-        (None, Some(Flash::Text(_, true))) => WARN,
-        (None, Some(Flash::Text(_, false))) => ACCENT,
-        _ => FG,
+    let v = pill::view(s);
+    let color = match v.tone {
+        Tone::Plain => FG,
+        Tone::Accent => ACCENT,
+        Tone::Warn => WARN,
     };
-    let text = pill::text(s);
-    let (left, right) = (p.s(pill::left_width(s)), p.s(pill::right_width(s)));
+    let text = &v.text;
+    let (left, right) = (p.s(v.left_width()), p.s(v.right_width()));
     if left + right == 0 {
-        p.text(p.f.bold, &text, rc, color, DT_CENTER);
+        p.text(p.f.bold, text, rc, color, DT_CENTER);
     } else {
-        // Как в чёлке мака: слева обложка, по центру текст, справа полоски. Всё одним блоком по центру.
-        let tw = p.measure(p.f.bold, &text);
+        // Как в чёлке мака: слева значки, по центру текст, справа полоски. Всё одним блоком по центру.
+        let tw = p.measure(p.f.bold, text);
         let x = (rc.right - (left + tw + right)) / 2;
         let mid = rc.bottom / 2;
-        draw_left(p, s, x, mid);
-        p.text(p.f.bold, &text, RECT { left: x + left, ..rc }, color, DT_LEFT);
+        draw_left(p, s, &v.lead, x, mid);
+        p.text(p.f.bold, text, RECT { left: x + left, ..rc }, color, DT_LEFT);
         if right > 0 {
             // Настоящий спектр того, что играет (feat::viz), 4 столбика.
             let vx = x + left + tw + p.s(10);
             p.viz(RECT { left: vx, top: mid - p.s(7), right: vx + p.s(EQ_W), bottom: mid + p.s(7) }, 4);
         }
     }
-    if pill::plain(s) {
+    if v.plain {
         progress(p, rc);
     }
 }
 
-/// Слева от текста: точки микрофона/камеры и мини-обложка трека.
-unsafe fn draw_left(p: &mut Painter, s: &State, mut x: i32, mid: i32) {
-    let (mic, cam) = pill::privacy_dots();
-    for (on, c) in [(mic, MIC), (cam, CAM)] {
-        if on {
-            let d = p.s(DOT);
-            p.fill(RECT { left: x, top: mid - d / 2, right: x + d, bottom: mid - d / 2 + d }, DOT, c);
-            x += p.s(DOT + 4);
+/// Значки левого слота в том порядке, в каком их собрал `pill::assemble`.
+unsafe fn draw_left(p: &mut Painter, s: &State, lead: &[Lead], mut x: i32, mid: i32) {
+    let mut after_dots = false;
+    for l in lead {
+        // Между точками микрофона/камеры и следующим значком зазор.
+        let dot = matches!(l, Lead::Mic | Lead::Cam);
+        if after_dots && !dot {
+            x += p.s(pill::DOT_GAP);
         }
-    }
-    if mic || cam {
-        x += p.s(4);
-    }
-    if let Some(a) = pill::mini_art() {
-        let side = p.s(ART);
-        p.art(RECT { left: x, top: mid - side / 2, right: x + side, bottom: mid - side / 2 + side }, &a, 10);
-        x += p.s(ART + 10);
-    }
-    // Агенты: маскот главного из них (кому нужно разрешение, иначе работающий), число — если их больше одного.
-    if let (Some((_, n)), Some(a)) = (s.agents.attention(), mascot::lead(&s.agents.list)) {
-        let px = p.s(2);
-        mascot::draw(p, x, mid - px * mascot::H / 2, px, a, s.notif_flip);
-        if n > 1 {
-            let tx = x + px * mascot::W + p.s(4);
-            let r = RECT { left: tx, top: 0, right: tx + p.s(16), bottom: mid * 2 };
-            p.text(p.f.small, &n.to_string(), r, DIM, DT_LEFT);
+        after_dots = dot;
+        match *l {
+            Lead::Mic | Lead::Cam => {
+                let d = p.s(DOT);
+                let c = if *l == Lead::Mic { MIC } else { CAM };
+                p.fill(RECT { left: x, top: mid - d / 2, right: x + d, bottom: mid - d / 2 + d }, DOT, c);
+            }
+            Lead::Art => {
+                if let Some(a) = pill::mini_art() {
+                    let side = p.s(ART);
+                    p.art(RECT { left: x, top: mid - side / 2, right: x + side, bottom: mid - side / 2 + side }, &a, 10);
+                }
+            }
+            // Маскот главного агента (кому нужно разрешение, иначе работающий), число — если их больше одного.
+            Lead::Mascot { count } => {
+                if let Some(a) = mascot::lead(&s.agents.list) {
+                    let px = p.s(2);
+                    mascot::draw(p, x, mid - px * mascot::H / 2, px, a, s.notif_flip);
+                    if count > 1 {
+                        let tx = x + px * mascot::W + p.s(4);
+                        let r = RECT { left: tx, top: 0, right: tx + p.s(16), bottom: mid * 2 };
+                        p.text(p.f.small, &count.to_string(), r, DIM, DT_LEFT);
+                    }
+                }
+            }
         }
+        x += p.s(l.width());
     }
 }
 
