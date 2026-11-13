@@ -15,6 +15,7 @@ use crate::sys::power::{Battery, PowerEvent};
 
 const FLASH_LEVEL_MS: u32 = 1500;
 
+#[derive(Clone)]
 pub enum Flash {
     /// Громкость: уровень 0..1, без звука.
     Volume(f32, bool),
