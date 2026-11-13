@@ -227,7 +227,7 @@ pub unsafe fn cursor_inside(hwnd: HWND) -> bool {
 
 pub unsafe fn schedule_collapse(hwnd: HWND) {
     if !cursor_inside(hwnd) {
-        SetTimer(hwnd, TIMER_COLLAPSE, COLLAPSE_DELAY_MS, None);
+        SetTimer(hwnd, TIMER_COLLAPSE, st(|s| s.settings.collapse_ms), None);
     }
 }
 
@@ -363,6 +363,18 @@ unsafe fn tray_menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else { return };
     let auto = if sys::autostart::enabled() { MF_CHECKED } else { MF_UNCHECKED };
     let _ = AppendMenuW(menu, MF_STRING | auto, MENU_AUTOSTART, w!("Запускать вместе с Windows"));
+    let mut cfg = st(|s| s.settings.clone());
+    let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
+    let _ = AppendMenuW(menu, MF_STRING | check(cfg.dot_mode), MENU_DOT, w!("Просто точка: карточки не выезжают"));
+    let _ = AppendMenuW(menu, MF_STRING | check(cfg.sound), MENU_SOUND, w!("Звук таймера"));
+    let delays = [(200, w!("Быстро, 0,2 с")), (350, w!("Обычно, 0,35 с")), (600, w!("Медленно, 0,6 с")), (1000, w!("Очень медленно, 1 с"))];
+    if let Ok(sub) = CreatePopupMenu() {
+        for (i, (ms, label)) in delays.iter().enumerate() {
+            let _ = AppendMenuW(sub, MF_STRING | check(cfg.collapse_ms == *ms), MENU_DELAY + i, *label);
+        }
+        // Подменю уничтожается вместе с главным меню.
+        let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Сворачиваться после ухода курсора"));
+    }
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
     let _ = AppendMenuW(menu, MF_STRING, MENU_EXIT, w!("Выход"));
     let mut pt = POINT::default();
@@ -375,6 +387,15 @@ unsafe fn tray_menu(hwnd: HWND) {
         MENU_AUTOSTART => sys::autostart::set(!sys::autostart::enabled()),
         MENU_EXIT => {
             let _ = DestroyWindow(hwnd);
+        }
+        id @ (MENU_DOT | MENU_SOUND) | id @ MENU_DELAY..=MENU_DELAY_LAST => {
+            match id {
+                MENU_DOT => cfg.dot_mode = !cfg.dot_mode,
+                MENU_SOUND => cfg.sound = !cfg.sound,
+                _ => cfg.collapse_ms = delays[id - MENU_DELAY].0,
+            }
+            st(|s| s.settings = cfg.clone());
+            cfg.save();
         }
         _ => {}
     }

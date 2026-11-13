@@ -63,3 +63,9 @@ pub const HOTKEY_CLIP: i32 = 2;
 
 pub const MENU_AUTOSTART: usize = 10;
 pub const MENU_EXIT: usize = 11;
+/// Настройки в меню трея (`feat::settings`).
+pub const MENU_DOT: usize = 12;
+pub const MENU_SOUND: usize = 13;
+/// Четыре пункта подменю «Сворачиваться после ухода курсора»: 20..=23.
+pub const MENU_DELAY: usize = 20;
+pub const MENU_DELAY_LAST: usize = 23;
