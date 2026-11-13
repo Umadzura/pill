@@ -30,7 +30,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         p.hint(w, h, "Колесо мыши — громкость");
         return;
     }
-    let art = p.r(24, 62, 156, 194);
+    let art = p.r(24, 58, 172, 206);
     match &m.art {
         Some(a) => p.art(art, a, R_TILE),
         None => {
@@ -38,33 +38,34 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
             p.text(p.f.icon_big, I_MUSIC, art, DIM, DT_CENTER);
         }
     }
-    let x = p.s(176);
+    let x = p.s(192);
     let right = w - p.s(24);
-    p.text(p.f.small, &m.app, RECT { left: x, top: p.s(64), right, bottom: p.s(82) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.small, &m.app, RECT { left: x, top: p.s(62), right, bottom: p.s(80) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
     let title = if m.title.is_empty() { "Без названия" } else { &m.title };
-    p.text(p.f.title, title, RECT { left: x, top: p.s(84), right, bottom: p.s(112) }, FG, DT_LEFT | DT_END_ELLIPSIS);
-    p.text(p.f.normal, &m.artist, RECT { left: x, top: p.s(112), right, bottom: p.s(134) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.title, title, RECT { left: x, top: p.s(82), right, bottom: p.s(110) }, FG, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.normal, &m.artist, RECT { left: x, top: p.s(110), right, bottom: p.s(132) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
     let playing = m.playing;
     let progress = m.progress();
     let can_seek = m.can_seek;
     // Лок отпускаем до кнопок: никогда не держим его дольше, чем нужно.
     drop(m);
 
-    p.icon_button(p.r(170, 146, 214, 190), I_PREV, Hit::Music(MusicHit::Prev), false);
-    let play = p.r(220, 142, 272, 194);
+    p.icon_button(p.r(186, 154, 230, 198), I_PREV, Hit::Music(MusicHit::Prev), false);
+    let play = p.r(236, 150, 288, 202);
     p.fill(play, 52, HOVER);
     p.icon_button(play, if playing { I_PAUSE } else { I_PLAY }, Hit::Music(MusicHit::Play), true);
-    p.icon_button(p.r(278, 146, 322, 190), I_NEXT, Hit::Music(MusicHit::Next), false);
+    p.icon_button(p.r(294, 154, 338, 198), I_NEXT, Hit::Music(MusicHit::Next), false);
+    // Спектр на всю ширину под перемоткой: раньше нижняя треть панели пустовала.
     if playing {
-        p.viz(p.r(344, 148, EXPANDED_W - 24, 188), crate::feat::viz::BANDS);
+        p.viz(p.r(24, 248, EXPANDED_W - 24, 288), crate::feat::viz::BANDS);
     }
 
     // Время трека и полоска перемотки.
     if let Some((cur, dur)) = progress {
         let right = EXPANDED_W - 24;
-        p.text(p.f.small, &fmt_time(cur), p.r(24, 204, 70, 222), DIM, DT_LEFT);
-        p.text(p.f.small, &fmt_time(dur), p.r(right - 56, 204, right, 222), DIM, DT_RIGHT);
-        let bar = p.r(76, 211, right - 62, 215);
+        p.text(p.f.small, &fmt_time(cur), p.r(24, 216, 70, 234), DIM, DT_LEFT);
+        p.text(p.f.small, &fmt_time(dur), p.r(right - 56, 216, right, 234), DIM, DT_RIGHT);
+        let bar = p.r(76, 223, right - 62, 227);
         p.fill(bar, 4, PANEL);
         let fill = RECT { right: bar.left + ((bar.right - bar.left) as f64 * cur / dur) as i32, ..bar };
         let seek = Hit::Music(MusicHit::Seek);
@@ -76,6 +77,6 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         }
     }
 
-    p.volume_row(24, 240, EXPANDED_W - 24, s.ctl.snap.volume);
+    p.volume_row(24, 300, EXPANDED_W - 24, s.ctl.snap.volume);
     p.hint(w, h, "Колесо мыши — громкость");
 }
