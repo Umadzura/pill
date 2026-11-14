@@ -42,11 +42,11 @@ unsafe fn button(p: &mut Painter, x: i32, top: i32, label: &str, key: &str, hit:
 
 unsafe fn notif(p: &mut Painter, pk: &Peek, h: i32) {
     // Кружок с первой буквой отправителя, цвет по имени: настоящую аватарку Windows не отдаёт.
-    let av = p.r(16, 14, 60, 58);
+    let av = p.r(16, 14, 56, 54);
     p.fill(av, R_PILL, super::mascot::body_color(&pk.title));
     p.text(p.f.title, &letter(&pk.title), av, rgb(17, 17, 17), DT_CENTER);
 
-    let (x, right) = (p.s(74), p.s(W - 16));
+    let (x, right) = (p.s(70), p.s(W - 16));
     let top = RECT { left: x, top: p.s(12), right, bottom: p.s(34) };
     let aw = p.measure(p.f.small, &pk.app).min(p.s(150));
     p.text(p.f.small, &pk.app, RECT { left: right - aw, ..top }, DIM, DT_LEFT | DT_END_ELLIPSIS);
@@ -58,8 +58,7 @@ unsafe fn notif(p: &mut Painter, pk: &Peek, h: i32) {
         let n = pk.count.to_string();
         let cw = p.measure(p.f.small, &n) + p.s(12);
         let chip = RECT { left: x + nw + p.s(8), top: top.top + p.s(3), right: x + nw + p.s(8) + cw, bottom: top.bottom - p.s(3) };
-        p.fill(chip, R_PILL, HOVER);
-        p.text(p.f.small, &n, chip, DIM, DT_CENTER);
+        p.text(p.f.small, &n, chip, DIM, DT_LEFT);
     }
 
     if pk.lines.len() > 1 {
