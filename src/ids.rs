@@ -31,6 +31,10 @@ pub const WM_APP_API: u32 = WM_APP + 11;
 pub const WM_APP_NOTIF: u32 = WM_APP + 12;
 /// Отрисовка узнала, что содержимому вкладки нужна другая высота панели: переложить окно.
 pub const WM_APP_LAYOUT: u32 = WM_APP + 13;
+/// Над окном держат файл, увели или бросили (`sys::dragdrop`, wParam = ENTER/LEAVE/DROP).
+pub const WM_APP_DROP: u32 = WM_APP + 14;
+/// Воркер сделал миниатюры для полки (`winrt::THUMBS`).
+pub const WM_APP_THUMB: u32 = WM_APP + 15;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;

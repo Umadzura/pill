@@ -26,6 +26,8 @@ use crate::{input, pill, shell, sys, ui};
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tab {
     Music,
+    /// Полка: файлы, брошенные на пилюлю, и последние скопированные тексты.
+    Shelf,
     /// Строка поиска (программы, буфер, действия). В шапке её нет: открывается хоткеем или лупой.
     Commands,
     Controls,
@@ -35,8 +37,9 @@ pub enum Tab {
 
 /// Вкладки в шапке. «Система» — группа из двух страниц (`Tab::Controls` «Управление» и
 /// `Tab::System` «Монитор»), между ними переключатель под шапкой.
-pub const TABS: [(Tab, &str); 3] = [
+pub const TABS: [(Tab, &str); 4] = [
     (Tab::Music, "Музыка"),
+    (Tab::Shelf, "Полка"),
     (Tab::Controls, "Система"),
     (Tab::Feed, "События"),
 ];
@@ -71,6 +74,12 @@ pub enum Hit {
     AgentDrop(usize),
     /// Крестик у чата во вкладке «События»: убрать все его уведомления (id самого свежего).
     NotifGroup(u32),
+    /// Плитка файла на полке: щелчок открывает, потянуть — вытащить в другое окно.
+    Shelf(usize),
+    /// Крестик на плитке: убрать с полки.
+    ShelfDel(usize),
+    /// Строка «Скопированное» на полке (индекс в `clip.items`): вставить.
+    ShelfClip(usize),
     /// Карточка из чёлки: кнопки и сама карточка.
     Peek(PeekHit),
     Alarm,
@@ -94,6 +103,7 @@ pub struct State {
     /// Где сейчас нарисованы полоски визуализатора (None — не видны).
     pub viz_area: Option<ui::viz::VizArea>,
     pub clip: clip::History,
+    pub shelf: crate::feat::shelf::Shelf,
     pub cmd: cmd::CmdState,
     pub ctl: ctl::CtlState,
     pub timers: timers::Timers,
@@ -143,6 +153,7 @@ pub unsafe fn init_state() {
         hover: None,
         viz_area: None,
         clip: clip::History::load(),
+        shelf: crate::feat::shelf::Shelf::load(),
         cmd: cmd::CmdState { apps: Vec::new(), freq: cmd::load_freq() },
         ctl: ctl::CtlState::default(),
         timers: timers::Timers::default(),
@@ -254,6 +265,18 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
             }
             Redraw::Content
         }
+        Hit::Shelf(i) => crate::feat::shelf::on_press(hwnd, i, x, y),
+        Hit::ShelfDel(i) => {
+            crate::feat::shelf::remove(i);
+            Redraw::Content
+        }
+        Hit::ShelfClip(i) => {
+            let text = st(|s| s.clip.items.get(i).map(|e| e.text.clone()));
+            if let Some(t) = text {
+                input::paste(hwnd, &t);
+            }
+            Redraw::None
+        }
         Hit::Peek(h) => peek::on_hit(hwnd, h),
         Hit::Alarm => {
             st(|s| s.timers.dismiss());
@@ -309,7 +332,7 @@ unsafe fn on_wheel(hwnd: HWND, delta: i32) {
             st(|s| s.feed_scroll = (s.feed_scroll as i32 - notches).clamp(0, s.agents.list.len() as i32) as usize);
             Redraw::Content
         }
-        Tab::System => Redraw::None,
+        Tab::System | Tab::Shelf => Redraw::None,
     };
     redraw(hwnd, r);
 }
@@ -565,6 +588,8 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         WM_APP_API => api::on_events(hwnd),
         WM_APP_NOTIF => on_notifs(hwnd),
         WM_APP_LAYOUT => shell::layout(hwnd),
+        WM_APP_DROP => crate::feat::shelf::on_drop(hwnd, wparam.0),
+        WM_APP_THUMB => crate::feat::shelf::on_thumbs(hwnd),
         WM_APP_SYS => {
             let warn = sysmon::LOAD_WARN.lock().unwrap().take();
             if let Some(text) = warn {

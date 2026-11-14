@@ -10,6 +10,7 @@ mod paint;
 mod peek;
 pub mod settings;
 pub mod search;
+mod shelf;
 mod surface;
 mod sys;
 pub mod viz;
@@ -195,6 +196,7 @@ unsafe fn render_with(hwnd: HWND, w: i32, h: i32, pos: Option<POINT>, cap: Optio
                             p.oy = 0;
                         }
                         Tab::Feed => feed::draw(&mut p, s, w, h),
+                        Tab::Shelf => shelf::draw(&mut p, s, w),
                     }
                 }
             }

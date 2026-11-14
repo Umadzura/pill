@@ -47,6 +47,8 @@ features = [
     "Win32_NetworkManagement_Rras",
     "Win32_Security",
     "Win32_System_Com",
+    # STGMEDIUM для приёма файлов (CF_HDROP)
+    "Win32_System_Com_StructuredStorage",
     "Win32_System_DataExchange",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",

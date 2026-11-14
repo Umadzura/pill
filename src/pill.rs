@@ -114,10 +114,16 @@ pub struct Facts {
     pub playing: bool,
     /// Сколько агентов работает или ждёт разрешения (None — никого).
     pub agents: Option<usize>,
+    /// Над пилюлей держат файл.
+    pub drop: bool,
 }
 
 pub fn assemble(f: Facts) -> View {
     let quiet = View { lead: Vec::new(), text: String::new(), tone: Tone::Plain, level: false, viz: false, dim_from: None, plain: false, task_bar: None, unread: 0 };
+    if f.drop {
+        // Одна фраза и белая черта снизу (полоска задачи на 100%).
+        return View { text: "Отпусти: на полку".into(), tone: Tone::Accent, plain: true, task_bar: Some(100), ..quiet };
+    }
     if let Some(a) = f.alarm {
         return View { text: format!("⏰  {}", a), tone: Tone::Accent, ..quiet };
     }
@@ -178,6 +184,7 @@ pub fn view(s: &State) -> View {
         battery: battery_short(s.osd.battery),
         agents: s.agents.attention().map(|(_, n)| n),
         task_bar: s.tasks.bar(),
+        drop: s.shelf.over,
         ..Facts::default()
     };
     {
