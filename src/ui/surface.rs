@@ -17,6 +17,8 @@ pub struct Canvas {
     bits: *mut u32,
     w: i32,
     h: i32,
+    /// Ширина строки буфера: на время анимации буфер больше кадра, кадр — его левый верхний угол.
+    stride: i32,
 }
 
 fn px(c: COLORREF) -> u32 {
@@ -35,12 +37,30 @@ fn mix(d: u32, c: u32, k: f32) -> u32 {
 
 impl Canvas {
     unsafe fn at(&self, x: i32, y: i32) -> Option<*mut u32> {
-        (x >= 0 && y >= 0 && x < self.w && y < self.h).then(|| self.bits.add((y * self.w + x) as usize))
+        (x >= 0 && y >= 0 && x < self.w && y < self.h).then(|| self.bits.add((y * self.stride + x) as usize))
+    }
+
+    /// Строка y кадра.
+    unsafe fn row(&self, y: i32) -> &mut [u32] {
+        std::slice::from_raw_parts_mut(self.bits.add((y * self.stride) as usize), self.w as usize)
     }
 
     /// Залить всё одним цветом.
     pub unsafe fn clear(&self, c: COLORREF) {
-        std::slice::from_raw_parts_mut(self.bits, (self.w * self.h) as usize).fill(px(c));
+        for y in 0..self.h {
+            self.row(y).fill(px(c));
+        }
+    }
+
+    /// Притушить весь кадр к чёрному: k = 1 — как есть, 0 — чёрный. Содержимое проявляется при раскрытии.
+    pub unsafe fn fade(&self, k: f32) {
+        let m = (k.clamp(0.0, 1.0) * 256.0) as u32;
+        for y in 0..self.h {
+            for p in self.row(y) {
+                let c = *p;
+                *p = (c & 0xFF00_0000) | ((((c >> 16) & 0xFF) * m >> 8) << 16) | ((((c >> 8) & 0xFF) * m >> 8) << 8) | ((c & 0xFF) * m >> 8);
+            }
+        }
     }
 
     /// Доля закрашивания пикселя в углу скругления: i-й столбец от края, dy — глубина строки в зоне угла.
@@ -100,7 +120,7 @@ impl Canvas {
             }
             let (xs, xe) = (xs.max(0), xe.min(self.w));
             if xe > xs {
-                std::slice::from_raw_parts_mut(self.bits.add((y * self.w + xs) as usize), (xe - xs) as usize).fill(c);
+                std::slice::from_raw_parts_mut(self.bits.add((y * self.stride + xs) as usize), (xe - xs) as usize).fill(c);
             }
         }
     }
@@ -133,8 +153,10 @@ impl Canvas {
     /// и вырезаем форму чёлки. Верх прижат к краю экрана и расходится к нему «ушками» шириной
     /// `ear` (вогнутые углы, как у выреза в экране), нижние углы тела скруглены радиусом `rad_px`.
     pub unsafe fn finish(&self, rad_px: i32, ear: i32) {
-        for p in std::slice::from_raw_parts_mut(self.bits, (self.w * self.h) as usize) {
-            *p |= 0xFF00_0000;
+        for y in 0..self.h {
+            for p in self.row(y) {
+                *p |= 0xFF00_0000;
+            }
         }
         // Оставить пикселю долю k непрозрачности (премультиплицированная альфа: так её ждёт UpdateLayeredWindow).
         let dim = |x: i32, y: i32, k: f32| {
@@ -184,6 +206,10 @@ pub struct Surface {
     bmp: HBITMAP,
     old: HGDIOBJ,
     bits: *mut u32,
+    /// Сколько выделено.
+    cap_w: i32,
+    cap_h: i32,
+    /// Размер текущего кадра (не больше выделенного).
     w: i32,
     h: i32,
 }
@@ -214,21 +240,23 @@ impl Surface {
             return None;
         }
         let old = SelectObject(dc, bmp);
-        Some(Surface { dc, bmp, old, bits: bits as *mut u32, w, h })
+        Some(Surface { dc, bmp, old, bits: bits as *mut u32, cap_w: w, cap_h: h, w, h })
     }
 
     pub fn canvas(&self) -> Canvas {
-        Canvas { bits: self.bits, w: self.w, h: self.h }
+        Canvas { bits: self.bits, w: self.w, h: self.h, stride: self.cap_w }
     }
 
-    /// Показать буфер на экране. `dirty` — поменялся только этот прямоугольник.
-    pub unsafe fn present(&self, hwnd: HWND, dirty: Option<RECT>) {
+    /// Показать кадр на экране. `dirty` — поменялся только этот прямоугольник. `pos` — куда поставить
+    /// окно: размер и место меняются тем же вызовом, что и картинка, поэтому кадр не «дёргается».
+    pub unsafe fn present(&self, hwnd: HWND, dirty: Option<RECT>, pos: Option<POINT>) {
         let size = SIZE { cx: self.w, cy: self.h };
         let src = POINT::default();
         let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
         let info = UPDATELAYEREDWINDOWINFO {
             cbSize: std::mem::size_of::<UPDATELAYEREDWINDOWINFO>() as u32,
             psize: &size,
+            pptDst: pos.as_ref().map(|p| p as *const POINT).unwrap_or(std::ptr::null()),
             hdcSrc: self.dc,
             pptSrc: &src,
             pblend: &blend,
@@ -254,16 +282,28 @@ thread_local! {
     static SURFACE: RefCell<Option<Surface>> = const { RefCell::new(None) };
 }
 
-/// Буфер размера w×h (пересоздаётся, если размер окна сменился).
-pub unsafe fn with(w: i32, h: i32, f: impl FnOnce(&Surface)) {
+/// Буфер под кадр w×h. `cap` — на время анимации: выделить сразу с запасом и не пересоздавать
+/// на каждом кадре. Без `cap` буфер ровно по кадру (лишние мегабайты не держим).
+pub unsafe fn with(w: i32, h: i32, cap: Option<(i32, i32)>, f: impl FnOnce(&Surface)) {
     SURFACE.with(|cell| {
         let mut slot = cell.borrow_mut();
-        if slot.as_ref().map(|s| (s.w, s.h)) != Some((w, h)) {
+        let need = cap.map(|(cw, ch)| (cw.max(w), ch.max(h))).unwrap_or((w, h));
+        let fits = slot.as_ref().is_some_and(|s| {
+            let have = (s.cap_w, s.cap_h);
+            if cap.is_some() {
+                have.0 >= w && have.1 >= h
+            } else {
+                have == (w, h)
+            }
+        });
+        if !fits {
             // Сначала освобождаем старый: два буфера сразу — лишние мегабайты.
             *slot = None;
-            *slot = Surface::new(w, h);
+            *slot = Surface::new(need.0, need.1);
         }
-        if let Some(s) = slot.as_ref() {
+        if let Some(s) = slot.as_mut() {
+            s.w = w;
+            s.h = h;
             f(s);
         }
     });

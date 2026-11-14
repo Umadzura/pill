@@ -445,8 +445,11 @@ unsafe fn on_mouse_leave(hwnd: HWND) {
     if st(|s| s.peek.as_ref().is_some_and(|p| !p.answerable())) {
         SetTimer(hwnd, TIMER_PEEK, 2500, None);
     }
-    // Пока печатаешь, панель не прячется от ухода курсора.
-    if !active {
+    // Пока окно меняет размер, «ушёл» бывает ложным: край проехал под неподвижным курсором
+    // (пружина чуть проскакивает цель). Решаем, когда анимация закончится.
+    if st(|s| s.shell.leave_during_anim()) {
+    } else if !active {
+        // Пока печатаешь, панель не прячется от ухода курсора.
         SetTimer(hwnd, TIMER_COLLAPSE, st(|s| s.settings.collapse_ms), None);
     }
     let _ = InvalidateRect(hwnd, None, false);

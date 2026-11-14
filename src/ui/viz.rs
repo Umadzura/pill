@@ -44,7 +44,7 @@ pub unsafe fn on_frame(hwnd: HWND) {
             let _ = GdiFlush();
             cv.fill_round(a.rect, 0, BG);
             draw(cv, dpi, a.rect, a.bars);
-            sf.present(hwnd, Some(a.rect));
+            sf.present(hwnd, Some(a.rect), None);
         });
     }
     // Кадр нарисован: наблюдатель может слать следующий.
