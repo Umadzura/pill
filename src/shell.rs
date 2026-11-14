@@ -12,7 +12,7 @@ use crate::ids::*;
 use crate::{pill, sys, ui};
 
 // Размеры в логических пикселях (при 100% масштабе).
-pub const COLLAPSED_MIN_W: i32 = 190;
+pub const COLLAPSED_MIN_W: i32 = 104;
 pub const COLLAPSED_H: i32 = 32;
 pub const EXPANDED_W: i32 = 600;
 pub const EXPANDED_H: i32 = 400;
@@ -131,7 +131,7 @@ pub unsafe fn layout(hwnd: HWND) {
         (scale(LEVEL_W, dpi), scale(COLLAPSED_H, dpi))
     } else {
         let tw = ui::measure(hwnd, dpi, &text) + scale(lead, dpi);
-        (tw.max(scale(COLLAPSED_MIN_W - 36, dpi)) + scale(36, dpi), scale(COLLAPSED_H, dpi))
+        (tw.max(scale(COLLAPSED_MIN_W - 28, dpi)) + scale(28, dpi), scale(COLLAPSED_H, dpi))
     };
     let w = w + 2 * scale(EAR, dpi);
     let visible = IsWindowVisible(hwnd).as_bool();

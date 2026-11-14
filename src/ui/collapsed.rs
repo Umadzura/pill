@@ -34,14 +34,15 @@ pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
     let text = &v.text;
     let (left, right) = (p.s(v.left_width()), p.s(v.right_width()));
     if left + right == 0 {
-        p.text(p.f.bold, text, rc, color, DT_CENTER);
+        let tw = p.measure(p.f.bold, text);
+        main_text(p, &v, RECT { left: (rc.right - tw) / 2, ..rc }, color);
     } else {
         // Как в чёлке мака: слева значки, по центру текст, справа полоски. Всё одним блоком по центру.
         let tw = p.measure(p.f.bold, text);
         let x = (rc.right - (left + tw + right)) / 2;
         let mid = rc.bottom / 2;
         draw_left(p, s, &v.lead, x, mid);
-        p.text(p.f.bold, text, RECT { left: x + left, ..rc }, color, DT_LEFT);
+        main_text(p, &v, RECT { left: x + left, ..rc }, color);
         let mut rx = x + left + tw;
         if v.unread > 0 {
             // Синий счётчик пропущенных уведомлений.
@@ -61,6 +62,18 @@ pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
     }
     if v.plain {
         progress(p, rc, v.task_bar);
+    }
+}
+
+/// Текст центра от левого края `r`: основная часть цветом `color`, заряд батареи серым.
+unsafe fn main_text(p: &Painter, v: &pill::View, r: RECT, color: COLORREF) {
+    match v.dim_from {
+        Some(i) => {
+            let (head, tail) = v.text.split_at(i);
+            p.text(p.f.bold, head, r, color, DT_LEFT);
+            p.text(p.f.bold, tail, RECT { left: r.left + p.measure(p.f.bold, head), ..r }, DIM, DT_LEFT);
+        }
+        None => p.text(p.f.bold, &v.text, r, color, DT_LEFT),
     }
 }
 

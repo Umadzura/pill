@@ -14,8 +14,8 @@ pub const EQ_W: i32 = 18;
 pub const DOT: i32 = 7;
 /// Сторона мини-обложки.
 pub const ART: i32 = 20;
-/// Ширина маскота агента (9 пикселей по 2 px).
-pub const MASCOT_W: i32 = 18;
+/// Ширина маскота агента (10 пикселей по 2 px).
+pub const MASCOT_W: i32 = 20;
 
 /// Значок в левом слоте. Порядок в `View::lead` — порядок на экране.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -57,6 +57,8 @@ pub struct View {
     pub level: bool,
     /// Справа полоски визуализатора.
     pub viz: bool,
+    /// С какого байта текста начинается приглушённый хвост (заряд батареи). None — весь текст одним цветом.
+    pub dim_from: Option<usize>,
     /// Обычный вид: можно рисовать полоску прогресса трека.
     pub plain: bool,
     /// Прогресс задачи скрипта, 0..=100: тонкая полоска по низу (важнее прогресса трека).
@@ -111,7 +113,7 @@ pub struct Facts {
 }
 
 pub fn assemble(f: Facts) -> View {
-    let quiet = View { lead: Vec::new(), text: String::new(), tone: Tone::Plain, level: false, viz: false, plain: false, task_bar: None, unread: 0 };
+    let quiet = View { lead: Vec::new(), text: String::new(), tone: Tone::Plain, level: false, viz: false, dim_from: None, plain: false, task_bar: None, unread: 0 };
     if let Some(a) = f.alarm {
         return View { text: format!("⏰  {}", a), tone: Tone::Accent, ..quiet };
     }
@@ -130,7 +132,14 @@ pub fn assemble(f: Facts) -> View {
     if let Some(left) = f.timer_left {
         parts.push(format!("⏱ {}", fmt_dur(left)));
     }
-    parts.extend(f.battery);
+    // Заряд батареи идёт последним и рисуется серым.
+    let mut text = parts.join("   ");
+    let mut dim_from = None;
+    if let Some(b) = f.battery {
+        text.push_str("  ");
+        dim_from = Some(text.len());
+        text.push_str(&b);
+    }
     let mut lead = Vec::new();
     if f.mic {
         lead.push(Lead::Mic);
@@ -144,7 +153,7 @@ pub fn assemble(f: Facts) -> View {
     if let Some(count) = f.agents {
         lead.push(Lead::Mascot { count });
     }
-    View { lead, text: parts.join("   "), tone: Tone::Plain, level: false, viz: f.playing, plain: true, task_bar: f.task_bar, unread: f.unread }
+    View { lead, text, tone: Tone::Plain, level: false, viz: f.playing, dim_from, plain: true, task_bar: f.task_bar, unread: f.unread }
 }
 
 pub fn time_text() -> String {
@@ -231,7 +240,8 @@ mod tests {
             agents: Some(2),
             ..facts()
         });
-        assert_eq!(v.text, format!("14:32   Рендер 45%   ⏱ {}   87%", fmt_dur(90)));
+        assert_eq!(v.text, format!("14:32   Рендер 45%   ⏱ {}  87%", fmt_dur(90)));
+        assert_eq!(v.dim_from.map(|i| &v.text[i..]), Some("87%"));
         assert_eq!(v.lead, vec![Lead::Mic, Lead::Art, Lead::Mascot { count: 2 }]);
         // точка + зазор, обложка, маскот с числом
         assert_eq!(v.left_width(), (DOT + 4) + DOT_GAP + (ART + 10) + (MASCOT_W + 8 + 12));
