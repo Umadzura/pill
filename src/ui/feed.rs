@@ -169,7 +169,10 @@ unsafe fn notifs_page(p: &mut Painter, w: i32, h: i32, list: &[Notif]) {
         y += NOTIF_STEP;
         let hit = Hit::NotifGroup(g.newest);
         let hov = p.hovered(hit);
-        p.fill(row, R_TILE, if hov { HOVER } else { PANEL });
+        // Строка без плашки: подложка только под курсором.
+        if hov {
+            p.fill(row, R_ROW, HOVER);
+        }
         // Кружок с первой буквой отправителя, цвет по имени.
         let (d, mid) = (p.s(28), (row.top + row.bottom) / 2);
         let av = RECT { left: row.left + p.s(10), top: mid - d / 2, right: row.left + p.s(10) + d, bottom: mid - d / 2 + d };
@@ -182,15 +185,13 @@ unsafe fn notifs_page(p: &mut Painter, w: i32, h: i32, list: &[Notif]) {
         let nw = p.measure(p.f.bold, &g.title).min(right - left - p.s(110));
         p.text(p.f.bold, &g.title, RECT { right: left + nw, ..top }, FG, DT_LEFT | DT_END_ELLIPSIS);
         if g.count > 1 {
+            // Сколько сообщений в чате — просто число рядом с именем.
             let n = g.count.to_string();
-            let cw = p.measure(p.f.small, &n) + p.s(12);
-            let chip = RECT { left: left + nw + p.s(8), top: top.top + p.s(2), right: left + nw + p.s(8) + cw, bottom: top.bottom - p.s(2) };
-            p.fill(chip, R_PILL, if hov { TRACK } else { HOVER });
-            p.text(p.f.small, &n, chip, DIM, DT_CENTER);
+            p.text(p.f.small, &n, RECT { left: left + nw + p.s(8), right: left + nw + p.s(40), ..top }, DIM, DT_LEFT);
         }
-        let tail = RECT { left: right - p.s(52), ..top };
+        let tail = RECT { left: right - p.s(60), ..top };
         if hov {
-            p.text(p.f.icon, I_DEL, tail, FG, DT_RIGHT);
+            p.text(p.f.small, "убрать", tail, FG, DT_RIGHT);
         } else {
             p.text(p.f.small, &fmt_age(notifs::age(g.created, now_ft)), tail, DIM, DT_RIGHT);
         }
