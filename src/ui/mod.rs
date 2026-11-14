@@ -41,19 +41,15 @@ const SUB_H: i32 = 30;
 
 /// Переключатель «Управление | Монитор» под шапкой вкладки «Система».
 unsafe fn subtabs(p: &mut Painter, s: &State) {
+    // Две страницы двумя словами: активная белая, вторая тихая.
     let items = [(Tab::Controls, "Управление"), (Tab::System, "Монитор")];
-    let (seg, pad) = (p.s(104), p.s(3));
-    let frame = RECT { left: p.s(20), top: p.s(54), right: p.s(20) + seg * items.len() as i32 + 2 * pad, bottom: p.s(80) };
-    p.fill(frame, R_PILL, PANEL);
-    for (i, (t, name)) in items.iter().enumerate() {
-        let left = frame.left + pad + i as i32 * seg;
-        let r = RECT { left, top: frame.top + pad, right: left + seg, bottom: frame.bottom - pad };
+    let mut left = p.s(22);
+    for (t, name) in items.iter() {
+        let r = RECT { left, top: p.s(54), right: left + p.measure(p.f.normal, name), bottom: p.s(80) };
+        left = r.right + p.s(18);
         let h = Hit::Tab(*t);
         let on = *t == s.shell.tab;
-        if on {
-            p.fill(r, R_PILL, TRACK);
-        }
-        p.text(p.f.small, name, r, if on || p.hovered(h) { FG } else { DIM }, DT_CENTER);
+        p.text(p.f.normal, name, r, if on { FG } else if p.hovered(h) { DIM } else { FAINT }, DT_LEFT);
         p.hit(r, h);
     }
 }
@@ -116,12 +112,9 @@ pub unsafe fn render(hwnd: HWND) {
                     let group = *t == Tab::Controls;
                     let on = *t == s.shell.tab || (group && s.shell.tab == Tab::System);
                     let h = Hit::Tab(if group { s.shell.sys_page } else { *t });
-                    if on {
-                        p.fill(r, R_PILL, SELECTED_TAB);
-                    } else if p.hovered(h) {
-                        p.fill(r, R_PILL, PANEL);
-                    }
-                    p.text(fonts.bold, name, RECT { right: r.right - extra, ..r }, if on { FG } else { DIM }, DT_CENTER);
+                    // Без капсул: активная вкладка белая, остальные тихие.
+                    let color = if on { FG } else if p.hovered(h) { DIM } else { FAINT };
+                    p.text(fonts.bold, name, RECT { right: r.right - extra, ..r }, color, DT_CENTER);
                     if badge > 0 {
                         let (d, mid) = (p.s(18), (r.top + r.bottom) / 2);
                         let b = RECT { left: r.right - p.s(10) - d, top: mid - d / 2, right: r.right - p.s(10), bottom: mid - d / 2 + d };
@@ -132,14 +125,17 @@ pub unsafe fn render(hwnd: HWND) {
                 }
                 if !searching {
                     // Справа лупа (открывает поиск), левее время и батарея.
-                    let lens = RECT { left: w - p.s(50), top: p.s(14), right: w - p.s(20), bottom: p.s(44) };
+                    // Справа шестерёнка (настройки) и лупа (поиск), левее время и батарея.
+                    let gear = RECT { left: w - p.s(48), top: p.s(14), right: w - p.s(18), bottom: p.s(44) };
+                    p.icon_button(gear, I_GEAR, Hit::Settings, false);
+                    let lens = RECT { left: gear.left - p.s(32), top: p.s(14), right: gear.left - p.s(2), bottom: p.s(44) };
                     p.icon_button(lens, I_SEARCH, Hit::Mode(0), false);
                     let r = RECT { left: 0, top: p.s(14), right: lens.left - p.s(8), bottom: p.s(44) };
                     let clock = match crate::feat::osd::battery_short(s.osd.battery) {
                         Some(b) => format!("{} · {}", time_text(), b),
                         None => time_text(),
                     };
-                    p.text(fonts.bold, &clock, r, DIM, DT_RIGHT);
+                    p.text(fonts.normal, &clock, r, DIM, DT_RIGHT);
                 }
 
                 if let Some(a) = &s.timers.alarm {

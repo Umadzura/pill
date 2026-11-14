@@ -27,7 +27,6 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         p.text(p.f.normal, "Сейчас ничего не играет", RECT { top: r.top + p.s(110), bottom: r.top + p.s(140), ..r }, DIM, DT_CENTER);
         drop(m);
         p.volume_row(24, 230, EXPANDED_W - 24, s.ctl.snap.volume);
-        p.hint(w, h, "Колесо мыши — громкость");
         return;
     }
     let art = p.r(24, 58, 172, 206);
@@ -52,8 +51,10 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
 
     p.icon_button(p.r(186, 154, 230, 198), I_PREV, Hit::Music(MusicHit::Prev), false);
     let play = p.r(236, 150, 288, 202);
-    p.fill(play, 52, HOVER);
-    p.icon_button(play, if playing { I_PAUSE } else { I_PLAY }, Hit::Music(MusicHit::Play), true);
+    // Главная кнопка белая с чёрным значком.
+    p.fill(play, 52, if p.hovered(Hit::Music(MusicHit::Play)) { rgb(220, 220, 224) } else { ACCENT });
+    p.text(p.f.icon_big, if playing { I_PAUSE } else { I_PLAY }, play, INK, DT_CENTER);
+    p.hit(play, Hit::Music(MusicHit::Play));
     p.icon_button(p.r(294, 154, 338, 198), I_NEXT, Hit::Music(MusicHit::Next), false);
     // Куда играет звук.
     if let Some(dev) = &s.ctl.snap.out_dev {
@@ -87,5 +88,4 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     }
 
     p.volume_row(24, 300, EXPANDED_W - 24, s.ctl.snap.volume);
-    p.hint(w, h, "Колесо мыши — громкость");
 }

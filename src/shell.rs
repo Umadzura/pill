@@ -388,7 +388,7 @@ pub unsafe fn on_tray(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-unsafe fn tray_menu(hwnd: HWND) {
+pub unsafe fn tray_menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else { return };
     let auto = if sys::autostart::enabled() { MF_CHECKED } else { MF_UNCHECKED };
     let _ = AppendMenuW(menu, MF_STRING | auto, MENU_AUTOSTART, w!("Запускать вместе с Windows"));

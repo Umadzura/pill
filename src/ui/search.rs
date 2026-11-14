@@ -25,25 +25,6 @@ const I_LINK: &str = "\u{E71B}";
 const I_TEXT: &str = "\u{E8A5}";
 const I_FOLDER: &str = "\u{E8B7}";
 
-/// Клавиша в рамке и подпись после неё. Возвращает x для следующей.
-unsafe fn key(p: &Painter, x: i32, top: i32, k: &str, label: &str) -> i32 {
-    let kw = p.measure(p.f.small, k) + p.s(10);
-    let r = RECT { left: x, top, right: x + kw, bottom: top + p.s(18) };
-    p.fill(r, 8, PANEL);
-    p.text(p.f.small, k, r, FG, DT_CENTER);
-    let lw = p.measure(p.f.small, label);
-    p.text(p.f.small, label, RECT { left: r.right + p.s(5), right: r.right + p.s(5) + lw, ..r }, DIM, DT_LEFT);
-    r.right + p.s(5) + lw + p.s(14)
-}
-
-/// Строка подсказок по клавишам внизу панели.
-unsafe fn hints(p: &Painter, h: i32, items: &[(&str, &str)]) {
-    let mut x = p.s(20);
-    for (k, label) in items {
-        x = key(p, x, h - p.s(28), k, label);
-    }
-}
-
 /// Шапка поиска вместо вкладок: режимы, подсказка про Tab и крестик «назад к вкладкам».
 pub unsafe fn header(p: &mut Painter, s: &State, w: i32) {
     let mut left = p.s(16);
@@ -52,18 +33,11 @@ pub unsafe fn header(p: &mut Painter, s: &State, w: i32) {
         left = r.right + p.s(4);
         let h = Hit::Mode(i as u8);
         let on = s.input.mode == i as u8;
-        if on {
-            p.fill(r, R_PILL, SELECTED_TAB);
-        } else if p.hovered(h) {
-            p.fill(r, R_PILL, PANEL);
-        }
-        p.text(p.f.bold, name, r, if on { FG } else { DIM }, DT_CENTER);
+        p.text(p.f.bold, name, r, if on { FG } else if p.hovered(h) { DIM } else { FAINT }, DT_CENTER);
         p.hit(r, h);
     }
     let close = RECT { left: w - p.s(50), top: p.s(14), right: w - p.s(20), bottom: p.s(44) };
     p.icon_button(close, I_DEL, Hit::Tab(s.input.back.unwrap_or(Tab::Music)), false);
-    let width = p.measure(p.f.small, "Tab") + p.s(10) + p.s(5) + p.measure(p.f.small, "режим");
-    key(p, close.left - p.s(10) - width, p.s(20), "Tab", "режим");
 }
 
 /// Подпись группы. Возвращает y под ней.
@@ -202,8 +176,12 @@ unsafe fn list_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
             CmdRes::Calc(_) => (String::new(), FG),
         };
         p.text(p.f.normal, &text, RECT { left: row.left + p.s(38), right: row.right - p.s(64), ..row }, color, DT_LEFT | DT_END_ELLIPSIS);
-        if i < 9 {
-            p.text(p.f.small, &format!("Alt {}", i + 1), RECT { right: row.right - p.s(10), ..row }, DIM, DT_RIGHT);
+        // У выбранной строки значок Enter, у остальных только номер для Alt+цифры.
+        let tail = RECT { right: row.right - p.s(10), ..row };
+        if s.input.active && s.input.sel == i {
+            p.text(p.f.small, "↵", tail, DIM, DT_RIGHT);
+        } else if i < 9 {
+            p.text(p.f.small, &(i + 1).to_string(), tail, FAINT, DT_RIGHT);
         }
         p.hit(row, hit);
     }
@@ -298,9 +276,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     let res = results(s);
     if s.input.mode == MODE_CLIP {
         clip_mode(p, s, w, h, &res);
-        hints(p, h, &[("Enter", "вставить"), ("Ctrl P", "закрепить"), ("Del", "убрать"), ("↑↓", "выбор"), ("Esc", "закрыть")]);
     } else {
         list_mode(p, s, w, h, &res);
-        hints(p, h, &[("Enter", "открыть"), ("Alt 1–9", "по номеру"), ("=", "расчёт"), (">", "команда"), ("5м", "таймер"), ("Esc", "закрыть")]);
     }
 }

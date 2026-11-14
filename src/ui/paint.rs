@@ -8,19 +8,24 @@ use windows::Win32::Graphics::Gdi::*;
 use super::surface::Canvas;
 use crate::app::{scale, Hit, State};
 
-// Палитра в духе тёмной темы iOS: чёрный фон, серые плитки, один акцентный цвет.
+// Палитра «чёрное стекло»: чёрный, белый и серые. Синего нет: главное и включённое — белое
+// с чёрным текстом, цвет остаётся только у состояний (оранжевый, зелёный, красный) и маскотов.
 pub const BG: COLORREF = rgb(0, 0, 0);
 pub const FG: COLORREF = rgb(245, 245, 247);
 pub const DIM: COLORREF = rgb(142, 142, 147);
-pub const ACCENT: COLORREF = rgb(10, 132, 255);
-pub const PANEL: COLORREF = rgb(28, 28, 30);
-pub const HOVER: COLORREF = rgb(44, 44, 46);
-pub const SELECTED_TAB: COLORREF = rgb(44, 44, 46);
+/// Совсем тихий текст: неактивные вкладки, номера строк.
+pub const FAINT: COLORREF = rgb(92, 92, 97);
+/// Главное действие и «включено»: белый.
+pub const ACCENT: COLORREF = FG;
+/// Текст и значки поверх белого.
+pub const INK: COLORREF = rgb(0, 0, 0);
+pub const PANEL: COLORREF = rgb(20, 20, 21);
+pub const HOVER: COLORREF = rgb(36, 36, 38);
 pub const ON: COLORREF = ACCENT;
 pub const OFF_DIM: COLORREF = rgb(18, 18, 19);
 pub const DANGER: COLORREF = rgb(255, 69, 58);
 pub const WARN: COLORREF = rgb(255, 159, 10);
-pub const TRACK: COLORREF = rgb(58, 58, 60);
+pub const TRACK: COLORREF = rgb(54, 54, 57);
 pub const MIC: COLORREF = rgb(255, 159, 10);
 pub const CAM: COLORREF = rgb(48, 209, 88);
 
@@ -51,6 +56,7 @@ pub const I_PIN: &str = "\u{E718}";
 pub const I_PINNED: &str = "\u{E840}";
 pub const I_DEL: &str = "\u{E711}";
 pub const I_SEARCH: &str = "\u{E721}";
+pub const I_GEAR: &str = "\u{E713}";
 pub const I_TIMER: &str = "\u{E916}";
 pub const I_CALC: &str = "\u{E8EF}";
 pub const I_APP: &str = "\u{E71D}";
@@ -252,15 +258,16 @@ impl Painter<'_> {
     pub unsafe fn slider_row(&mut self, x: i32, y: i32, right: i32, icon: &str, level: Option<f32>, dim: bool, h: Hit) {
         let lv = level.unwrap_or(0.0).clamp(0.0, 1.0);
         self.text(self.f.icon, icon, self.r(x, y, x + 24, y + 26), DIM, DT_LEFT);
-        let bar = self.r(x + 32, y + 10, right - 52, y + 16);
-        self.fill(bar, 6, PANEL);
+        // Тонкая линия вместо толстой полосы.
+        let bar = self.r(x + 32, y + 12, right - 44, y + 15);
+        self.fill(bar, 3, HOVER);
         let mut filled = bar;
         filled.right = bar.left + ((bar.right - bar.left) as f32 * lv) as i32;
         if filled.right > filled.left {
-            self.fill(filled, 6, if dim { DIM } else { ACCENT });
+            self.fill(filled, 3, if dim { DIM } else { ACCENT });
         }
-        let pct = if level.is_some() { format!("{}%", (lv * 100.0).round() as i32) } else { "—".into() };
-        self.text(self.f.normal, &pct, self.r(right - 46, y, right, y + 26), DIM, DT_RIGHT);
+        let pct = if level.is_some() { format!("{}", (lv * 100.0).round() as i32) } else { "—".into() };
+        self.text(self.f.small, &pct, self.r(right - 40, y, right, y + 26), DIM, DT_RIGHT);
         // Зона клика выше и ниже полоски, чтобы легко попасть.
         self.hit(RECT { top: bar.top - self.s(10), bottom: bar.bottom + self.s(10), ..bar }, h);
     }
@@ -284,10 +291,5 @@ impl Painter<'_> {
             self.text(self.f.normal, &format!("{}{}", inp.text, caret), tr, FG, align);
         }
         self.hit(r, Hit::Input);
-    }
-    /// Серая подсказка внизу вкладки.
-    pub unsafe fn hint(&self, w: i32, h: i32, text: &str) {
-        let r = RECT { left: self.s(20), top: h - self.s(40), right: w - self.s(20), bottom: h - self.s(16) };
-        self.text(self.f.small, text, r, DIM, DT_CENTER);
     }
 }

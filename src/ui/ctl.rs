@@ -69,9 +69,13 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
             None => OFF_DIM,
         };
         p.fill(r, R_TILE, bg);
-        let fg = if state.is_some() { FG } else { DIM };
-        // На синей плитке серый текст не читается: состояние тем же цветом, что название.
-        let sub_fg = if *state == Some(true) { FG } else { DIM };
+        // Включённая плитка белая с чёрным текстом, выключенная едва видна.
+        let fg = match state {
+            Some(true) => INK,
+            Some(false) => FG,
+            None => DIM,
+        };
+        let sub_fg = if *state == Some(true) { rgb(84, 84, 88) } else { DIM };
         p.text(p.f.icon, icon, RECT { left: r.left + p.s(14), right: r.left + p.s(40), ..r }, fg, DT_LEFT);
         let tx = RECT { left: r.left + p.s(46), right: r.right - p.s(8), ..r };
         p.text(p.f.bold, label, RECT { top: r.top + p.s(7), bottom: r.top + p.s(28), ..tx }, fg, DT_LEFT | DT_END_ELLIPSIS);
@@ -110,15 +114,18 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         } else if p.hovered(hit) && note.1 != DANGER {
             note = (label.to_string(), FG);
         }
-        // Выключение всегда красное: самая опасная кнопка.
-        p.fill(r, R_PILL, if confirming || *pw == Pw::Shutdown { DANGER } else if p.hovered(hit) { HOVER } else { PANEL });
-        p.text(p.f.icon, icon, r, FG, DT_CENTER);
+        // Контурная кнопка: кольцо и значок. Выключение отмечено красным значком, подтверждение — красной заливкой.
+        p.fill(r, R_PILL, if confirming { DANGER } else { TRACK });
+        if !confirming {
+            let b = p.s(1);
+            p.fill(RECT { left: r.left + b, top: r.top + b, right: r.right - b, bottom: r.bottom - b }, R_PILL, if p.hovered(hit) { HOVER } else { BG });
+        }
+        p.text(p.f.icon, icon, r, if *pw == Pw::Shutdown && !confirming { DANGER } else { FG }, DT_CENTER);
         p.hit(r, hit);
     }
     let tw = p.measure(p.f.small, &note.0).min(p.s(x0 - 12 - 20 - 24));
     let chip = RECT { left: p.s(20), top: p.s(y + 4), right: p.s(20) + tw + p.s(24), bottom: p.s(y + PW - 4) };
-    p.fill(chip, R_PILL, PANEL);
-    p.text(p.f.small, &note.0, RECT { left: chip.left + p.s(12), right: chip.right - p.s(12), ..chip }, note.1, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.small, &note.0, RECT { left: chip.left + p.s(2), right: chip.right, ..chip }, note.1, DT_LEFT | DT_END_ELLIPSIS);
     y += PW + 8;
 
     // Кто держит микрофон и камеру.
@@ -149,5 +156,5 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         let c = if u.cam.is_empty() { MIC } else { CAM };
         p.text(p.f.small, &format!("●  {}", parts.join("   ·   ")), p.r(20, y, text_right, y + 20), c, DT_LEFT | DT_END_ELLIPSIS);
     }
-    p.hint(w, h, "Колесо — громкость, над яркостью — яркость · Нет плитки? Клик откроет настройки");
+    let _ = h;
 }

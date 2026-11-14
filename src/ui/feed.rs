@@ -32,20 +32,16 @@ fn state_color(s: AgentState) -> COLORREF {
 /// Переключатель страниц под шапкой и сводка справа от него.
 unsafe fn pages(p: &mut Painter, s: &State, w: i32, notif_count: usize) {
     let items = [(false, format!("Агенты · {}", s.agents.list.len())), (true, format!("Уведомления · {}", notif_count))];
-    let (seg, pad) = (p.s(128), p.s(3));
-    let frame = RECT { left: p.s(20), top: p.s(54), right: p.s(20) + seg * 2 + 2 * pad, bottom: p.s(80) };
-    p.fill(frame, R_PILL, PANEL);
-    for (i, (page, name)) in items.iter().enumerate() {
-        let left = frame.left + pad + i as i32 * seg;
-        let r = RECT { left, top: frame.top + pad, right: left + seg, bottom: frame.bottom - pad };
+    let mut left = p.s(22);
+    for (page, name) in items.iter() {
+        let r = RECT { left, top: p.s(54), right: left + p.measure(p.f.normal, name), bottom: p.s(80) };
+        left = r.right + p.s(18);
         let h = Hit::FeedPage(*page);
         let on = *page == s.feed_notifs;
-        if on {
-            p.fill(r, R_PILL, TRACK);
-        }
-        p.text(p.f.small, name, r, if on || p.hovered(h) { FG } else { DIM }, DT_CENTER);
+        p.text(p.f.normal, name, r, if on { FG } else if p.hovered(h) { DIM } else { FAINT }, DT_LEFT);
         p.hit(r, h);
     }
+    let frame = RECT { left: p.s(22), top: p.s(54), right: left, bottom: p.s(80) };
     let (ask, work) = s.agents.summary();
     let mut parts = Vec::new();
     if ask > 0 {
@@ -131,7 +127,6 @@ unsafe fn agents_page(p: &mut Painter, s: &State, w: i32, h: i32) {
     }
     let more = order.len().saturating_sub(start + CARDS);
     let foot = RECT { left: p.s(20), top: h - p.s(26), right: w - p.s(24), bottom: h - p.s(8) };
-    p.text(p.f.small, "Клик по карточке: убрать", foot, DIM, DT_LEFT);
     if more > 0 || start > 0 {
         let t = if more > 0 { format!("ещё {} ↓", more) } else { "↑ к началу".to_string() };
         p.text(p.f.small, &t, foot, DIM, DT_RIGHT);
