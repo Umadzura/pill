@@ -13,10 +13,11 @@ use crate::feat::clip::{age_text, kind, now_secs, ClipHit, Entry, Kind};
 use crate::feat::cmd::{fmt_dur, frequent, results, CmdRes, MODES, MODE_ALL, MODE_APPS, MODE_CLIP};
 
 /// Сколько записей буфера видно сразу (нужно и для прокрутки стрелками).
-pub const CLIP_ROWS: usize = 7;
-const TOP: i32 = 94;
-const ROW: i32 = 28;
-const CALC_H: i32 = 44;
+pub const CLIP_ROWS: usize = 8;
+/// Под строкой ввода и тонкой чертой.
+const TOP: i32 = 64;
+const ROW: i32 = 34;
+const CALC_H: i32 = 46;
 const LABEL_H: i32 = 18;
 /// Правая граница списка в режиме «Буфер» и левая граница предпросмотра.
 const SPLIT: i32 = 298;
@@ -25,19 +26,51 @@ const I_LINK: &str = "\u{E71B}";
 const I_TEXT: &str = "\u{E8A5}";
 const I_FOLDER: &str = "\u{E8B7}";
 
-/// Шапка поиска вместо вкладок: режимы, подсказка про Tab и крестик «назад к вкладкам».
+/// Шапка поиска вместо вкладок: лупа, крупный текст запроса без рамки, справа режимы словами
+/// и крестик «назад к вкладкам». Под ней тонкая черта.
 pub unsafe fn header(p: &mut Painter, s: &State, w: i32) {
-    let mut left = p.s(16);
-    for (i, name) in MODES.iter().enumerate() {
-        let r = RECT { left, top: p.s(14), right: left + p.measure(p.f.bold, name) + p.s(24), bottom: p.s(44) };
-        left = r.right + p.s(4);
+    let (top, bottom) = (p.s(12), p.s(46));
+    // Справа налево: крестик, потом режимы.
+    let close = RECT { left: w - p.s(46), top, right: w - p.s(18), bottom };
+    p.icon_button(close, I_DEL, Hit::Tab(s.input.back.unwrap_or(Tab::Music)), false);
+    let mut x = close.left - p.s(10);
+    for (i, name) in MODES.iter().enumerate().rev() {
+        let nw = p.measure(p.f.normal, name);
+        let r = RECT { left: x - nw, top, right: x, bottom };
+        x = r.left - p.s(14);
         let h = Hit::Mode(i as u8);
         let on = s.input.mode == i as u8;
-        p.text(p.f.bold, name, r, if on { FG } else if p.hovered(h) { DIM } else { FAINT }, DT_CENTER);
-        p.hit(r, h);
+        p.text(p.f.normal, name, r, if on { FG } else if p.hovered(h) { DIM } else { FAINT }, DT_LEFT);
+        p.hit(RECT { left: r.left - p.s(4), right: r.right + p.s(4), ..r }, h);
     }
-    let close = RECT { left: w - p.s(50), top: p.s(14), right: w - p.s(20), bottom: p.s(44) };
-    p.icon_button(close, I_DEL, Hit::Tab(s.input.back.unwrap_or(Tab::Music)), false);
+    // Лупа и текст запроса.
+    p.text(p.f.icon_big, I_SEARCH, RECT { left: p.s(22), right: p.s(50), top, bottom }, DIM, DT_LEFT);
+    let field = RECT { left: p.s(56), right: x - p.s(6), top, bottom };
+    let inp = &s.input;
+    if inp.text.is_empty() {
+        let ph = match inp.mode {
+            MODE_CLIP => "Поиск в буфере",
+            MODE_APPS => "Программа",
+            MODE_ALL => "Поиск",
+            _ => "Расчёт, таймер, > команда",
+        };
+        p.text(p.f.hero, ph, field, FAINT, DT_LEFT | DT_END_ELLIPSIS);
+        if inp.active {
+            p.fill(RECT { left: field.left, top: field.top + p.s(7), right: field.left + p.s(2), bottom: field.bottom - p.s(7) }, 0, DIM);
+        }
+    } else {
+        // Длинный запрос показываем хвостом.
+        let tw = p.measure(p.f.hero, &inp.text);
+        let fw = field.right - field.left - p.s(6);
+        let align = if tw > fw { DT_RIGHT } else { DT_LEFT };
+        p.text(p.f.hero, &inp.text, RECT { right: field.right - p.s(6), ..field }, FG, align);
+        if inp.active {
+            let cx = field.left + tw.min(fw) + p.s(2);
+            p.fill(RECT { left: cx, top: field.top + p.s(7), right: cx + p.s(2), bottom: field.bottom - p.s(7) }, 0, DIM);
+        }
+    }
+    p.hit(field, Hit::Input);
+    p.fill(RECT { left: p.s(22), top: p.s(54), right: w - p.s(22), bottom: p.s(54) + p.s(1).max(1) }, 0, HOVER);
 }
 
 /// Подпись группы. Возвращает y под ней.
@@ -52,7 +85,9 @@ unsafe fn label(p: &Painter, right: i32, y: i32, title: &str, note: &str) -> i32
 unsafe fn clip_icon(p: &Painter, row: RECT, e: &Entry, pin: bool) {
     let r = RECT { left: row.left + p.s(10), right: row.left + p.s(34), ..row };
     if pin && e.pinned {
-        p.text(p.f.icon, I_PINNED, r, ACCENT, DT_LEFT);
+        // Закреплённое — белая точка.
+        let (d, mid) = (p.s(6), (row.top + row.bottom) / 2);
+        p.fill(RECT { left: r.left + p.s(4), top: mid - d / 2, right: r.left + p.s(4) + d, bottom: mid - d / 2 + d }, 6, FG);
         return;
     }
     match kind(&e.text) {
@@ -60,10 +95,17 @@ unsafe fn clip_icon(p: &Painter, row: RECT, e: &Entry, pin: bool) {
             let (d, mid) = (p.s(14), (row.top + row.bottom) / 2);
             p.fill(RECT { left: r.left, top: mid - d / 2, right: r.left + d, bottom: mid - d / 2 + d }, 8, rgb(cr, cg, cb));
         }
-        Kind::Link => p.text(p.f.icon, I_LINK, r, DIM, DT_LEFT),
-        Kind::Path => p.text(p.f.icon, I_FOLDER, r, DIM, DT_LEFT),
-        Kind::Text => p.text(p.f.icon, I_TEXT, r, DIM, DT_LEFT),
+        Kind::Link => p.text(p.f.icon, I_LINK, r, FAINT, DT_LEFT),
+        Kind::Path => p.text(p.f.icon, I_FOLDER, r, FAINT, DT_LEFT),
+        Kind::Text => p.text(p.f.icon, I_TEXT, r, FAINT, DT_LEFT),
     }
+}
+
+/// Значок программы: скруглённый квадрат цвета её имени с первой буквой.
+unsafe fn app_icon(p: &Painter, r: RECT, name: &str, font: HFONT, radius: i32) {
+    p.fill(r, radius, super::mascot::body_color(name));
+    let letter: String = name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default();
+    p.text(font, &letter, r, INK, DT_CENTER);
 }
 
 /// Пустая строка в режиме «Всё»: плитки программ, которые запускают чаще всего. Возвращает y под ними.
@@ -84,11 +126,9 @@ unsafe fn frequent_tiles(p: &mut Painter, s: &State, w: i32, mut y: i32) -> i32 
         let hit = Hit::AppTile(i);
         let side = p.s(44);
         let ic = RECT { left: x + (tw - side) / 2, top: cell.top, right: x + (tw - side) / 2 + side, bottom: cell.top + side };
-        p.fill(ic, 24, if p.hovered(hit) { HOVER } else { PANEL });
         let name = &s.cmd.apps[i].name;
-        let letter: String = name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default();
-        p.text(p.f.title, &letter, ic, super::mascot::body_color(name), DT_CENTER);
-        p.text(p.f.small, name, RECT { top: p.s(y + 48), ..cell }, DIM, DT_CENTER | DT_END_ELLIPSIS);
+        app_icon(p, ic, name, p.f.title, 24);
+        p.text(p.f.small, name, RECT { top: p.s(y + 48), ..cell }, if p.hovered(hit) { FG } else { DIM }, DT_CENTER | DT_END_ELLIPSIS);
         p.hit(cell, hit);
     }
     y + 74
@@ -110,6 +150,7 @@ unsafe fn list_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
             (true, _) => "Расчёт: 2+2*3, 15%*200 · Таймер: 5м, 1ч30м · Команда: > ipconfig",
         };
         p.text(p.f.small, msg, RECT { left: p.s(22), top: p.s(y + 4), right, bottom: p.s(y + 28) }, DIM, DT_LEFT);
+        p.reach(y + 28);
         return;
     }
     let now = Instant::now();
@@ -124,7 +165,7 @@ unsafe fn list_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
         };
         let new_group = !g.is_empty() && g != group;
         let rh = if matches!(r, CmdRes::Calc(_)) { CALC_H } else { ROW };
-        if p.s(y + rh + if new_group { LABEL_H } else { 0 }) > h - p.s(32) {
+        if p.s(y + rh + if new_group { LABEL_H } else { 0 }) > h - p.s(16) {
             break;
         }
         if new_group {
@@ -136,13 +177,14 @@ unsafe fn list_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
         let hit = Hit::Cmd(i);
         let sel = p.hovered(hit) || (s.input.active && s.input.sel == i);
         if let CmdRes::Calc(v) = r {
-            // Результат калькулятора крупной строкой.
-            let card = RECT { bottom: row.bottom - p.s(4), ..row };
-            p.fill(card, R_TILE, if sel { HOVER } else { PANEL });
-            p.text(p.f.icon_big, I_CALC, RECT { left: card.left + p.s(12), right: card.left + p.s(44), ..card }, ACCENT, DT_LEFT);
-            p.text(p.f.title, v, RECT { left: card.left + p.s(46), right: card.right - p.s(150), ..card }, FG, DT_LEFT | DT_END_ELLIPSIS);
-            p.text(p.f.small, "Enter: скопировать", RECT { right: card.right - p.s(12), ..card }, DIM, DT_RIGHT);
+            // Результат калькулятора крупным числом, без плашки.
+            if sel {
+                p.fill(row, R_ROW, HOVER);
+            }
+            p.text(p.f.hero, &format!("= {}", v), RECT { left: row.left + p.s(10), right: row.right - p.s(150), ..row }, FG, DT_LEFT | DT_END_ELLIPSIS);
+            p.text(p.f.small, "↵ скопировать", RECT { right: row.right - p.s(10), ..row }, DIM, DT_RIGHT);
             p.hit(row, hit);
+            p.reach(y);
             continue;
         }
         if sel {
@@ -151,19 +193,21 @@ unsafe fn list_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
         let ir = RECT { left: row.left + p.s(10), right: row.left + p.s(34), ..row };
         let (text, color) = match r {
             CmdRes::Timer(t) => {
-                p.text(p.f.icon, I_TIMER, ir, DIM, DT_LEFT);
+                p.text(p.f.icon, I_TIMER, ir, FAINT, DT_LEFT);
                 (format!("Таймер на {}", fmt_dur(*t)), FG)
             }
             CmdRes::App(a) => {
-                p.text(p.f.icon, I_APP, ir, DIM, DT_LEFT);
-                (s.cmd.apps[*a].name.clone(), FG)
+                let name = &s.cmd.apps[*a].name;
+                let (d, mid) = (p.s(24), (row.top + row.bottom) / 2);
+                app_icon(p, RECT { left: ir.left, top: mid - d / 2, right: ir.left + d, bottom: mid - d / 2 + d }, name, p.f.small, 14);
+                (name.clone(), FG)
             }
             CmdRes::Run(q) => {
-                p.text(p.f.icon, I_RUN, ir, DIM, DT_LEFT);
+                p.text(p.f.icon, I_RUN, ir, FAINT, DT_LEFT);
                 (format!("Выполнить: {}", q), DIM)
             }
             CmdRes::Active(t) => {
-                p.text(p.f.icon, I_TIMER, ir, DIM, DT_LEFT);
+                p.text(p.f.icon, I_TIMER, ir, FAINT, DT_LEFT);
                 let tm = &s.timers.list[*t];
                 let rest = tm.end.saturating_duration_since(now).as_secs();
                 (format!("Таймер: осталось {} из {} · Enter отменяет", fmt_dur(rest), fmt_dur(tm.total)), FG)
@@ -184,6 +228,7 @@ unsafe fn list_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
             p.text(p.f.small, &(i + 1).to_string(), tail, FAINT, DT_RIGHT);
         }
         p.hit(row, hit);
+        p.reach(y);
     }
 }
 
@@ -203,8 +248,12 @@ unsafe fn clip_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
         let e = &s.clip.items[*idx];
         let sec = if e.pinned { 1 } else { 2 };
         if sec != section {
+            // Между закреплёнными и остальными тонкая черта.
+            if section == 1 {
+                p.fill(RECT { left: p.s(22), top: p.s(y + 5), right: p.s(SPLIT), bottom: p.s(y + 5) + p.s(1).max(1) }, 0, HOVER);
+                y += 10;
+            }
             section = sec;
-            y = label(p, p.s(SPLIT), y, if e.pinned { "Закреплённые" } else { "Недавние" }, "");
         }
         let row = RECT { left, top: p.s(y), right: p.s(SPLIT), bottom: p.s(y + ROW) };
         y += ROW;
@@ -243,9 +292,10 @@ unsafe fn clip_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
     };
     let Some(CmdRes::Clip(idx)) = res.get(cur.min(res.len() - 1)) else { return };
     let e = &s.clip.items[*idx];
-    let panel = RECT { left: p.s(SPLIT + 12), top: p.s(TOP), right: w - p.s(20), bottom: h - p.s(40) };
-    p.fill(panel, R_TILE, PANEL);
-    let inner = RECT { left: panel.left + p.s(12), top: panel.top + p.s(10), right: panel.right - p.s(12), bottom: panel.bottom - p.s(48) };
+    // Предпросмотр за тонкой вертикальной чертой, без плашки.
+    let panel = RECT { left: p.s(SPLIT + 20), top: p.s(TOP), right: w - p.s(22), bottom: h - p.s(18) };
+    p.fill(RECT { left: p.s(SPLIT + 10), top: panel.top, right: p.s(SPLIT + 10) + p.s(1).max(1), bottom: panel.bottom }, 0, HOVER);
+    let inner = RECT { left: panel.left + p.s(6), top: panel.top + p.s(6), right: panel.right, bottom: panel.bottom - p.s(56) };
     // Длинную запись целиком не рисуем: в окошко влезает несколько сотен символов.
     let shown: String = e.text.chars().take(1200).collect();
     p.text_wrap(p.f.normal, &shown, inner, FG);
@@ -255,27 +305,21 @@ unsafe fn clip_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
         Kind::Color(..) => "Цвет",
         Kind::Text => "Текст",
     };
-    let meta = format!("{} · {} симв. · {} стр.", what, e.text.chars().count(), e.text.lines().count().max(1));
-    let m1 = RECT { left: inner.left, top: panel.bottom - p.s(44), right: inner.right, bottom: panel.bottom - p.s(26) };
-    p.text(p.f.small, &meta, m1, DIM, DT_LEFT | DT_END_ELLIPSIS);
     // У записей, сохранённых до появления времени, его нет.
-    if e.time != 0 {
-        let when = format!("Скопировано: {}", age_text(e.time, now));
-        p.text(p.f.small, &when, RECT { top: m1.bottom, bottom: m1.bottom + p.s(18), ..m1 }, DIM, DT_LEFT);
-    }
+    let when = if e.time != 0 { format!(" · {}", age_text(e.time, now)) } else { String::new() };
+    let meta = format!("{} · {} симв.{}", what, e.text.chars().count(), when);
+    let m1 = RECT { left: inner.left, top: panel.bottom - p.s(40), right: inner.right, bottom: panel.bottom - p.s(22) };
+    p.text(p.f.small, &meta, m1, DIM, DT_LEFT | DT_END_ELLIPSIS);
+    let keys = RECT { top: m1.bottom, bottom: m1.bottom + p.s(18), ..m1 };
+    p.text(p.f.small, "↵ вставить · Ctrl P закрепить · Del убрать", keys, FAINT, DT_LEFT | DT_END_ELLIPSIS);
 }
 
 pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
-    p.reach(crate::shell::EXPANDED_H);
-    let placeholder = match s.input.mode {
-        MODE_CLIP => "Поиск в истории буфера",
-        MODE_APPS => "Название программы",
-        MODE_ALL => "Программа, расчёт, таймер или текст из буфера",
-        _ => "Расчёт, таймер или > команда",
-    };
-    p.input(w, s, placeholder);
+    // Список — по высоте результатов (панель подтягивается плавно), буфер с предпросмотром — во всю высоту.
+    p.reach(TOP + 40);
     let res = results(s);
     if s.input.mode == MODE_CLIP {
+        p.reach(crate::shell::EXPANDED_H);
         clip_mode(p, s, w, h, &res);
     } else {
         list_mode(p, s, w, h, &res);

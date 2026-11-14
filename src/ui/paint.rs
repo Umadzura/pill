@@ -6,7 +6,7 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 
 use super::surface::Canvas;
-use crate::app::{scale, Hit, State};
+use crate::app::{scale, Hit};
 
 // Палитра «чёрное стекло»: чёрный, белый и серые. Синего нет: главное и включённое — белое
 // с чёрным текстом, цвет остаётся только у состояний (оранжевый, зелёный, красный) и маскотов.
@@ -58,8 +58,6 @@ pub const I_DEL: &str = "\u{E711}";
 pub const I_SEARCH: &str = "\u{E721}";
 pub const I_GEAR: &str = "\u{E713}";
 pub const I_TIMER: &str = "\u{E916}";
-pub const I_CALC: &str = "\u{E8EF}";
-pub const I_APP: &str = "\u{E71D}";
 pub const I_RUN: &str = "\u{E756}";
 pub const I_MUSIC: &str = "\u{E8D6}";
 pub const I_SHOT: &str = "\u{E8C6}"; // ножницы, как у «Ножниц» Windows
@@ -280,26 +278,5 @@ impl Painter<'_> {
         self.text(self.f.small, &pct, self.r(right - 40, y, right, y + 26), DIM, DT_RIGHT);
         // Зона клика выше и ниже полоски, чтобы легко попасть.
         self.hit(RECT { top: bar.top - self.s(10), bottom: bar.bottom + self.s(10), ..bar }, h);
-    }
-    /// Поле ввода (поиск в буфере / командная строка).
-    pub unsafe fn input(&mut self, w: i32, s: &State, placeholder: &str) {
-        let inp = &s.input;
-        let r = RECT { left: self.s(20), top: self.s(56), right: w - self.s(20), bottom: self.s(86) };
-        self.fill(r, R_PILL, if inp.active { HOVER } else { PANEL });
-        self.text(self.f.icon, I_SEARCH, RECT { left: r.left + self.s(12), ..r }, DIM, DT_LEFT);
-        let tr = RECT { left: r.left + self.s(36), right: r.right - self.s(12), ..r };
-        if inp.text.is_empty() {
-            let ph = if inp.active { "" } else { placeholder };
-            self.text(self.f.normal, ph, tr, DIM, DT_LEFT | DT_END_ELLIPSIS);
-            if inp.active {
-                self.text(self.f.normal, "|", tr, ACCENT, DT_LEFT);
-            }
-        } else {
-            let caret = if inp.active { "|" } else { "" };
-            // Длинный ввод показываем хвостом.
-            let align = if inp.text.chars().count() > 55 { DT_RIGHT } else { DT_LEFT };
-            self.text(self.f.normal, &format!("{}{}", inp.text, caret), tr, FG, align);
-        }
-        self.hit(r, Hit::Input);
     }
 }
