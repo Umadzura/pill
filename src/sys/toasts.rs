@@ -12,6 +12,8 @@ pub struct Toast {
     pub id: u32,
     /// Имя программы, как в центре уведомлений.
     pub app: String,
+    /// Идентификатор программы (AUMID): по нему её можно открыть.
+    pub aumid: String,
     /// Строки текста: заголовок и дальше тело.
     pub texts: Vec<String>,
     /// Когда создано: FILETIME (UTC, шаг 100 нс).
@@ -69,7 +71,8 @@ fn toast(id: u32, n: &UserNotification) -> Toast {
         }
     }
     let created = n.CreationTime().map(|t| t.UniversalTime).unwrap_or(0);
-    Toast { id, app, texts, created }
+    let aumid = n.AppInfo().and_then(|a| a.AppUserModelId()).map(|h| h.to_string()).unwrap_or_default();
+    Toast { id, app, aumid, texts, created }
 }
 
 /// Сейчас в тех же единицах, что `Toast::created`.

@@ -349,12 +349,12 @@ pub unsafe fn on_events(hwnd: HWND) {
                 match notice {
                     Some(agents::Notice::Ask { name, text, answerable }) => {
                         let kind = PeekKind::Ask { id, answerable };
-                        let pk = Peek { kind, app: "Claude Code".into(), title: format!("{}: нужно разрешение", name), body: text };
+                        let pk = Peek::new(kind, "Claude Code".into(), format!("{}: нужно разрешение", name), text);
                         // С кнопками ждём ответа, без кнопок это просто напоминание.
                         peek::show(hwnd, pk, if answerable { None } else { Some(8000) });
                     }
                     Some(agents::Notice::Done { name, text }) => {
-                        let pk = Peek { kind: PeekKind::Done, app: "Claude Code".into(), title: format!("{}: закончил", name), body: text };
+                        let pk = Peek::new(PeekKind::Done, "Claude Code".into(), format!("{}: закончил", name), text);
                         peek::show(hwnd, pk, Some(4000));
                     }
                     Some(agents::Notice::Resolved) => {

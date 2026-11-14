@@ -63,8 +63,8 @@ pub enum Hit {
     FeedPage(bool),
     /// Крестик у агента во вкладке «События»: убрать из списка.
     AgentDrop(usize),
-    /// Крестик у уведомления: убрать его и из центра уведомлений Windows (id уведомления).
-    NotifDrop(u32),
+    /// Крестик у чата во вкладке «События»: убрать все его уведомления (id самого свежего).
+    NotifGroup(u32),
     /// Карточка из чёлки: кнопки и сама карточка.
     Peek(PeekHit),
     Alarm,
@@ -103,6 +103,8 @@ pub struct State {
     pub notif_flip: bool,
     /// Карточка из чёлки (уведомление, просьба агента), если показана.
     pub peek: Option<Peek>,
+    /// До какого момента не показывать карточки уведомлений (кнопка «Тишина на час»).
+    pub quiet_until: Option<Instant>,
     /// «События»: открыта страница уведомлений (иначе агенты) и с какой карточки агентов начинать.
     pub feed_notifs: bool,
     pub feed_scroll: usize,
@@ -137,6 +139,7 @@ pub unsafe fn init_state() {
         sys_sampling: false,
         notif_flip: false,
         peek: None,
+        quiet_until: None,
         feed_notifs: false,
         feed_scroll: 0,
         settings: crate::feat::settings::Settings::load(),
@@ -204,9 +207,12 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
             });
             Redraw::Content
         }
-        Hit::NotifDrop(id) => {
-            notifs::INBOX.lock().unwrap().forget(id);
-            winrt::send(winrt::Job::NotifDrop(id));
+        Hit::NotifGroup(id) => {
+            // Убрать весь чат: и из списка, и из центра уведомлений Windows.
+            let ids = notifs::INBOX.lock().unwrap().forget_group(id);
+            for id in ids {
+                winrt::send(winrt::Job::NotifDrop(id));
+            }
             Redraw::Content
         }
         Hit::Peek(h) => peek::on_hit(hwnd, h),
@@ -291,10 +297,25 @@ fn notifs_poll() {
 
 /// WM_APP_NOTIF: пришло новое уведомление или список поменялся.
 unsafe fn on_notifs(hwnd: HWND) {
-    let fresh = notifs::INBOX.lock().unwrap().fresh.take();
+    // Новое уведомление вместе с остальными из того же чата.
+    let fresh = {
+        let mut inbox = notifs::INBOX.lock().unwrap();
+        inbox.fresh.take().map(|n| {
+            let g = notifs::groups(&inbox.list).into_iter().find(|g| g.app == n.app && g.title == n.title);
+            (n, g)
+        })
+    };
+    // «Тишина на час»: карточки не выезжают, счётчик пропущенных растёт как обычно.
+    let quiet = st(|s| s.quiet_until.is_some_and(|t| Instant::now() < t));
     match fresh {
-        Some(n) => {
-            let pk = Peek { kind: PeekKind::Notif, app: n.app, title: n.title, body: n.body };
+        Some(_) if quiet => shell::layout(hwnd),
+        Some((n, g)) => {
+            let mut pk = Peek::new(PeekKind::Notif, n.app, n.title, n.body);
+            pk.aumid = n.aumid;
+            if let Some(g) = g {
+                pk.count = g.count;
+                pk.lines = g.last;
+            }
             peek::show(hwnd, pk, Some(notifs::PEEK_MS));
         }
         None => {
@@ -367,6 +388,8 @@ unsafe fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
             return;
         }
         let _ = KillTimer(hwnd, TIMER_PEEK);
+        // Под курсором у уведомления появляются кнопки.
+        peek::set_hover(hwnd, true);
     }
     let (x, y) = (loword(lparam), hiword(lparam));
     let changed = st(|s| {
@@ -384,6 +407,7 @@ unsafe fn on_mouse_leave(hwnd: HWND) {
         s.hover = None;
         s.input.active
     });
+    peek::set_hover(hwnd, false);
     // Курсор ушёл с карточки: уведомление скоро прячем, просьба о разрешении ждёт ответа.
     if st(|s| s.peek.as_ref().is_some_and(|p| !p.answerable())) {
         SetTimer(hwnd, TIMER_PEEK, 2500, None);
