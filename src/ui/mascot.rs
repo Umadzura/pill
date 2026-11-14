@@ -79,6 +79,15 @@ fn face(state: AgentState, flip: bool) -> Vec<(i32, i32, COLORREF)> {
 /// Рисует маскота с левым верхним углом (x, y); `px` — размер одного пикселя спрайта в физических px.
 /// Все смещения физические: вызывающий уже пересчитал логические размеры через `Painter::s`.
 pub unsafe fn draw(p: &Painter, x: i32, y: i32, px: i32, a: &Agent, flip: bool) {
+    draw_faded(p, x, y, px, a, flip, 1.0);
+}
+
+/// То же, но притушенный к чёрному: k = 1 — как есть. Задние маскоты в стопке тусклее.
+pub unsafe fn draw_faded(p: &Painter, x: i32, y: i32, px: i32, a: &Agent, flip: bool, k: f32) {
+    let fade = |c: COLORREF| {
+        let ch = |sh: u32| ((((c.0 >> sh) & 0xFF) as f32 * k) as u32) << sh;
+        COLORREF(ch(0) | ch(8) | ch(16))
+    };
     let body = body_color(&a.name);
     // Тот, кто ждёт человека или закончил, темнее: «не горит».
     let body = if matches!(a.state, AgentState::Done | AgentState::Gone | AgentState::Wait) { dim(body) } else { body };
@@ -95,11 +104,11 @@ pub unsafe fn draw(p: &Painter, x: i32, y: i32, px: i32, a: &Agent, flip: bool) 
                 c += 1;
             }
             let r = RECT { left: x + start as i32 * px, top: y + row as i32 * px, right: x + c as i32 * px, bottom: y + (row as i32 + 1) * px };
-            fill_px(p, r, body);
+            fill_px(p, r, fade(body));
         }
     }
     for (fx, fy, c) in face(a.state, flip) {
-        fill_px(p, RECT { left: x + fx * px, top: y + fy * px, right: x + (fx + 1) * px, bottom: y + (fy + 1) * px }, c);
+        fill_px(p, RECT { left: x + fx * px, top: y + fy * px, right: x + (fx + 1) * px, bottom: y + (fy + 1) * px }, fade(c));
     }
 }
 
@@ -114,9 +123,9 @@ unsafe fn fill_px(p: &Painter, r: RECT, c: COLORREF) {
     p.cv.fill_round(RECT { left: r.left + p.ox, top: r.top + p.oy, right: r.right + p.ox, bottom: r.bottom + p.oy }, 0, c);
 }
 
-/// Какого агента показать в свёрнутой пилюле: сначала нужно разрешение, потом работающие.
-pub fn lead(list: &[Agent]) -> Option<&Agent> {
-    list.iter()
-        .find(|a| a.state == AgentState::Ask)
-        .or_else(|| list.iter().find(|a| a.state == AgentState::Work))
+/// Кого показать стопкой в свёрнутой пилюле: сначала тех, кому нужно разрешение, потом работающих.
+pub fn stack(list: &[Agent]) -> Vec<&Agent> {
+    let mut v: Vec<&Agent> = list.iter().filter(|a| a.state == AgentState::Ask).collect();
+    v.extend(list.iter().filter(|a| a.state == AgentState::Work));
+    v
 }
