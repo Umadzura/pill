@@ -9,6 +9,9 @@ use crate::bg::winrt;
 use crate::feat::music::MusicHit;
 use crate::shell::EXPANDED_W;
 
+/// Левый край текстового столбца справа от обложки (логические px).
+const X: i32 = 268;
+
 /// Время трека «1:23» / «1:02:03».
 fn fmt_time(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
@@ -20,74 +23,93 @@ fn fmt_time(secs: f64) -> String {
 }
 
 pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
+    let _ = h;
     let m = winrt::MEDIA.lock().unwrap();
     if !m.has {
-        let r = RECT { left: 0, top: p.s(50), right: w, bottom: h - p.s(20) };
-        p.text(p.f.icon_big, I_MUSIC, RECT { bottom: r.top + p.s(120), ..r }, DIM, DT_CENTER);
-        p.text(p.f.normal, "Сейчас ничего не играет", RECT { top: r.top + p.s(110), bottom: r.top + p.s(140), ..r }, DIM, DT_CENTER);
+        let r = RECT { left: 0, top: p.s(60), right: w, bottom: p.s(150) };
+        p.text(p.f.icon_big, I_MUSIC, RECT { bottom: r.top + p.s(40), ..r }, FAINT, DT_CENTER);
+        p.text(p.f.normal, "Сейчас ничего не играет", RECT { top: r.top + p.s(48), bottom: r.top + p.s(70), ..r }, DIM, DT_CENTER);
         drop(m);
-        p.volume_row(24, 230, EXPANDED_W - 24, s.ctl.snap.volume);
-        p.reach(256);
+        p.volume_row(24, 160, EXPANDED_W - 24, s.ctl.snap.volume);
+        p.reach(186);
         return;
     }
-    let art = p.r(24, 58, 172, 206);
-    match &m.art {
-        Some(a) => p.art(art, a, R_TILE),
+    // Обложка на всю высоту блока слева.
+    let art = p.r(24, 54, 248, 278);
+    let colors = match &m.art {
+        Some(a) => {
+            p.art(art, a, R_TILE);
+            super::viz::tint(a)
+        }
         None => {
             p.fill(art, R_TILE, PANEL);
-            p.text(p.f.icon_big, I_MUSIC, art, DIM, DT_CENTER);
+            p.text(p.f.icon_big, I_MUSIC, art, FAINT, DT_CENTER);
+            (super::viz::PLAIN, super::viz::PLAIN)
         }
-    }
-    let x = p.s(192);
-    let right = w - p.s(24);
-    p.text(p.f.small, &m.app, RECT { left: x, top: p.s(62), right, bottom: p.s(80) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
+    };
+    let (x, right) = (p.s(X), w - p.s(24));
+    // Сверху мелко: программа и куда играет звук.
+    let src = match &s.ctl.snap.out_dev {
+        Some(dev) => format!("{} · {}", m.app, dev),
+        None => m.app.clone(),
+    };
+    p.text(p.f.small, &src, RECT { left: x, top: p.s(56), right, bottom: p.s(74) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
     let title = if m.title.is_empty() { "Без названия" } else { &m.title };
-    p.text(p.f.title, title, RECT { left: x, top: p.s(82), right, bottom: p.s(110) }, FG, DT_LEFT | DT_END_ELLIPSIS);
-    p.text(p.f.normal, &m.artist, RECT { left: x, top: p.s(110), right, bottom: p.s(132) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.hero, title, RECT { left: x, top: p.s(78), right, bottom: p.s(108) }, FG, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.normal, &m.artist, RECT { left: x, top: p.s(108), right, bottom: p.s(128) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
     let playing = m.playing;
     let progress = m.progress();
     let can_seek = m.can_seek;
     // Лок отпускаем до кнопок: никогда не держим его дольше, чем нужно.
     drop(m);
 
-    p.icon_button(p.r(186, 154, 230, 198), I_PREV, Hit::Music(MusicHit::Prev), false);
-    let play = p.r(236, 150, 288, 202);
-    // Главная кнопка белая с чёрным значком.
-    p.fill(play, 52, if p.hovered(Hit::Music(MusicHit::Play)) { rgb(220, 220, 224) } else { ACCENT });
+    // Кнопки: назад, белая «играть», вперёд.
+    p.icon_button(p.r(X - 4, 139, X + 32, 175), I_PREV, Hit::Music(MusicHit::Prev), false);
+    let play = p.r(X + 42, 135, X + 86, 179);
+    p.fill(play, 60, if p.hovered(Hit::Music(MusicHit::Play)) { rgb(220, 220, 224) } else { ACCENT });
     p.text(p.f.icon_big, if playing { I_PAUSE } else { I_PLAY }, play, INK, DT_CENTER);
     p.hit(play, Hit::Music(MusicHit::Play));
-    p.icon_button(p.r(294, 154, 338, 198), I_NEXT, Hit::Music(MusicHit::Next), false);
-    // Куда играет звук.
-    if let Some(dev) = &s.ctl.snap.out_dev {
-        let tw = p.measure(p.f.small, dev).min(p.s(180));
-        let right = p.s(EXPANDED_W - 24);
-        let chip = RECT { left: right - tw - p.s(44), top: p.s(164), right, bottom: p.s(188) };
-        p.fill(chip, R_PILL, PANEL);
-        p.text(p.f.icon, I_VOL, RECT { left: chip.left + p.s(8), right: chip.left + p.s(30), ..chip }, DIM, DT_LEFT);
-        p.text(p.f.small, dev, RECT { left: chip.left + p.s(32), right: chip.right - p.s(10), ..chip }, DIM, DT_LEFT | DT_END_ELLIPSIS);
-    }
-    // Спектр на всю ширину под перемоткой: раньше нижняя треть панели пустовала.
-    if playing {
-        p.viz(p.r(24, 248, EXPANDED_W - 24, 288), crate::feat::viz::BANDS);
+    p.icon_button(p.r(X + 96, 139, X + 132, 175), I_NEXT, Hit::Music(MusicHit::Next), false);
+
+    // Справа два слова: что показывать в нижнем углу.
+    let mut wx = right;
+    for (label, lyr) in [("Текст", true), ("Спектр", false)] {
+        let lw = p.measure(p.f.small, label);
+        let r = RECT { left: wx - lw, top: p.s(146), right: wx, bottom: p.s(168) };
+        let hit = Hit::Music(MusicHit::View(lyr));
+        let on = s.lyrics == lyr;
+        p.text(p.f.small, label, r, if on { FG } else if p.hovered(hit) { DIM } else { FAINT }, DT_RIGHT);
+        p.hit(RECT { left: r.left - p.s(4), right: r.right + p.s(4), ..r }, hit);
+        wx = r.left - p.s(14);
     }
 
-    // Время трека и полоска перемотки.
+    // Правый нижний угол: спектр цветом обложки или текст песни.
+    let corner = RECT { left: x, top: p.s(196), right, bottom: p.s(278) };
+    if s.lyrics {
+        // Текстов пока нет (этап 10): место уже заложено, раскладка не поменяется.
+        p.text(p.f.normal, "Текст песни появится позже", RECT { top: corner.top + p.s(20), bottom: corner.top + p.s(42), ..corner }, FAINT, DT_LEFT);
+    } else {
+        // На паузе полоски лежат ровной линией: угол не пустует.
+        p.viz(corner, crate::feat::viz::BANDS, colors);
+    }
+
+    // Перемотка тонкой линией.
     if let Some((cur, dur)) = progress {
-        let right = EXPANDED_W - 24;
-        p.text(p.f.small, &fmt_time(cur), p.r(24, 216, 70, 234), DIM, DT_LEFT);
-        p.text(p.f.small, &fmt_time(dur), p.r(right - 56, 216, right, 234), DIM, DT_RIGHT);
-        let bar = p.r(76, 223, right - 62, 227);
-        p.fill(bar, 4, PANEL);
+        let r_end = EXPANDED_W - 24;
+        p.text(p.f.small, &fmt_time(cur), p.r(24, 292, 70, 310), DIM, DT_LEFT);
+        p.text(p.f.small, &fmt_time(dur), p.r(r_end - 46, 292, r_end, 310), DIM, DT_RIGHT);
+        let bar = p.r(70, 300, r_end - 52, 303);
+        p.fill(bar, 3, HOVER);
         let fill = RECT { right: bar.left + ((bar.right - bar.left) as f64 * cur / dur) as i32, ..bar };
         let seek = Hit::Music(MusicHit::Seek);
-        if fill.right - fill.left >= p.s(4) {
-            p.fill(fill, 4, if p.hovered(seek) { ACCENT } else { FG });
+        if fill.right - fill.left >= p.s(3) {
+            p.fill(fill, 3, if p.hovered(seek) { DIM } else { FG });
         }
         if can_seek {
             p.hit(RECT { top: bar.top - p.s(8), bottom: bar.bottom + p.s(8), ..bar }, seek);
         }
     }
 
-    p.volume_row(24, 300, EXPANDED_W - 24, s.ctl.snap.volume);
-    p.reach(326);
+    p.volume_row(24, 316, EXPANDED_W - 24, s.ctl.snap.volume);
+    p.reach(342);
 }

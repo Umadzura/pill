@@ -12,6 +12,8 @@ pub enum MusicHit {
     Next,
     /// Полоска перемотки: доля считается от x клика внутри зоны.
     Seek,
+    /// «Спектр» (false) или «Текст» (true) в правом нижнем углу вкладки.
+    View(bool),
 }
 
 pub fn on_hit(h: MusicHit, rect: RECT, x: i32) -> Redraw {
@@ -22,6 +24,11 @@ pub fn on_hit(h: MusicHit, rect: RECT, x: i32) -> Redraw {
         MusicHit::Seek => {
             let w = (rect.right - rect.left).max(1);
             send(Job::Seek((x - rect.left) as f64 / w as f64));
+        }
+        MusicHit::View(lyrics) => {
+            crate::app::st(|s| s.lyrics = lyrics);
+            crate::feat::viz::refresh_want();
+            return Redraw::Content;
         }
     }
     // Плеер ответит событием, тогда и перерисуемся.

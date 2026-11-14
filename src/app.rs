@@ -114,6 +114,8 @@ pub struct State {
     /// «События»: открыта страница уведомлений (иначе агенты) и с какой карточки агентов начинать.
     pub feed_notifs: bool,
     pub feed_scroll: usize,
+    /// «Музыка»: вместо спектра показывать текст песни.
+    pub lyrics: bool,
     /// Настройки из `%APPDATA%\Pill\settings.txt`.
     pub settings: crate::feat::settings::Settings,
 }
@@ -150,6 +152,7 @@ pub unsafe fn init_state() {
         quiet_until: None,
         feed_notifs: false,
         feed_scroll: 0,
+        lyrics: false,
         settings: crate::feat::settings::Settings::load(),
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(s));
