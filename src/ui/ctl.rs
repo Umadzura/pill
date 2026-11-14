@@ -123,9 +123,15 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         p.text(p.f.icon, icon, r, if *pw == Pw::Shutdown && !confirming { DANGER } else { FG }, DT_CENTER);
         p.hit(r, hit);
     }
-    let tw = p.measure(p.f.small, &note.0).min(p.s(x0 - 12 - 20 - 24));
-    let chip = RECT { left: p.s(20), top: p.s(y + 4), right: p.s(20) + tw + p.s(24), bottom: p.s(y + PW - 4) };
-    p.text(p.f.small, &note.0, RECT { left: chip.left + p.s(2), right: chip.right, ..chip }, note.1, DT_LEFT | DT_END_ELLIPSIS);
+    // Слева от кнопок батарея в две строки («Батарея 87%» и «осталось …»), а под курсором — что делает кнопка.
+    let area = p.r(22, y, x0 - 12, y + PW);
+    match note.0.split_once(", ") {
+        Some((head, tail)) if note.1 == DIM => {
+            p.text(p.f.normal, head, RECT { bottom: area.top + p.s(19), ..area }, FG, DT_LEFT | DT_END_ELLIPSIS);
+            p.text(p.f.small, tail, RECT { top: area.top + p.s(18), ..area }, DIM, DT_LEFT | DT_END_ELLIPSIS);
+        }
+        _ => p.text(p.f.normal, &note.0, area, if note.1 == DIM { FG } else { note.1 }, DT_LEFT | DT_END_ELLIPSIS),
+    }
     p.reach(y + PW);
     y += PW + 8;
 
