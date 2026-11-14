@@ -26,14 +26,15 @@ unsafe fn button(p: &mut Painter, x: i32, top: i32, label: &str, key: &str, hit:
     let h = Hit::Peek(hit);
     let bg = match (primary, p.hovered(h)) {
         (true, false) => ACCENT,
-        (true, true) => rgb(64, 156, 255),
+        (true, true) => rgb(220, 220, 224),
         (false, false) => HOVER,
         (false, true) => TRACK,
     };
     p.fill(r, R_PILL, bg);
-    p.text(p.f.bold, label, RECT { left: r.left + p.s(13), ..r }, FG, DT_LEFT);
+    // На белой кнопке текст чёрный.
+    p.text(p.f.bold, label, RECT { left: r.left + p.s(13), ..r }, if primary { INK } else { FG }, DT_LEFT);
     if !key.is_empty() {
-        p.text(p.f.small, key, RECT { right: r.right - p.s(12), ..r }, if primary { FG } else { DIM }, DT_RIGHT);
+        p.text(p.f.small, key, RECT { right: r.right - p.s(12), ..r }, if primary { rgb(84, 84, 88) } else { DIM }, DT_RIGHT);
     }
     p.hit(r, h);
     r.right

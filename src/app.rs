@@ -54,6 +54,8 @@ pub enum Hit {
     Clip(ClipHit),
     /// Строка результата в поиске (номер в `cmd::results`).
     Cmd(usize),
+    /// Шестерёнка в шапке: настройки (пока это меню, что и у значка в трее).
+    Settings,
     /// Режим строки поиска (`cmd::MODE_*`); лупа в шапке — режим «Всё».
     Mode(u8),
     /// Плитка часто запускаемой программы (индекс в `cmd.apps`).
@@ -191,6 +193,10 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
         }
         Hit::Mode(m) => {
             input::switch_mode(hwnd, m);
+            Redraw::None
+        }
+        Hit::Settings => {
+            shell::tray_menu(hwnd);
             Redraw::None
         }
         Hit::AppTile(i) => {

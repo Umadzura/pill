@@ -51,7 +51,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
             let r = RECT { left: rx, top: mid - h / 2, right: rx + w, bottom: mid - h / 2 + h };
             p.fill(r, R_PILL, ACCENT);
             let n = if v.unread > 9 { "9+".to_string() } else { v.unread.to_string() };
-            p.text(p.f.small, &n, r, FG, DT_CENTER);
+            p.text(p.f.small, &n, r, INK, DT_CENTER);
             rx += w;
         }
         if v.viz {
