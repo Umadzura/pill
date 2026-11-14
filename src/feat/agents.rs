@@ -105,7 +105,8 @@ pub fn ask_detail(input: &HashMap<String, String>) -> (Vec<String>, (usize, usiz
 pub enum Notice {
     /// Нужно разрешение: карточка (с кнопками, если answerable).
     Ask { name: String, text: String, answerable: bool },
-    Done { name: String, text: String },
+    /// Закончил; secs — сколько работал над последним запросом.
+    Done { name: String, text: String, secs: u64 },
     /// Перестал ждать разрешения: убрать его карточку и отпустить хук.
     Resolved,
 }
@@ -118,6 +119,8 @@ pub struct Agent {
     pub note: String,
     /// С какого момента агент в этом состоянии.
     pub since: Instant,
+    /// Когда пришёл последний запрос человека (для «работал 6 минут»).
+    pub started: Instant,
     updated: Instant,
     /// Чем занят сейчас: «Bash: cargo build». Пусто — неизвестно.
     pub tool: String,
@@ -187,12 +190,13 @@ impl Agents {
                         self.list.remove(old);
                     }
                 }
-                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, updated: now, tool: String::new(), answer: String::new(), branch: None, cwd: String::new(), ask_lines: Vec::new(), ask_stat: (0, 0), ask_always: false });
+                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, started: now, updated: now, tool: String::new(), answer: String::new(), branch: None, cwd: String::new(), ask_lines: Vec::new(), ask_stat: (0, 0), ask_always: false });
                 true
             }
         };
         if let Some(a) = self.list.iter_mut().find(|a| a.id == id) {
             if new_prompt {
+                a.started = now;
                 a.tool.clear();
                 a.answer.clear();
                 a.branch = None;
@@ -217,7 +221,10 @@ impl Agents {
         match u.state {
             // Хук с ожиданием ответа показываем всегда: он мог прийти после простого уведомления.
             AgentState::Ask if changed || u.answerable => Some(Notice::Ask { name, text, answerable: u.answerable }),
-            AgentState::Done if changed => Some(Notice::Done { name, text }),
+            AgentState::Done if changed => {
+                let secs = self.list.iter().find(|a| a.id == id).map(|a| now.duration_since(a.started).as_secs()).unwrap_or(0);
+                Some(Notice::Done { name, text, secs })
+            }
             _ if changed && prev == Some(AgentState::Ask) => Some(Notice::Resolved),
             _ => None,
         }
@@ -289,6 +296,41 @@ pub fn branch_from_head(head: &str) -> String {
 /// Ветка проекта в папке cwd. Пусто — не репозиторий. Читает маленький файл: звать вне `st()`.
 pub fn read_branch(cwd: &str) -> String {
     std::fs::read_to_string(std::path::Path::new(cwd).join(".git").join("HEAD")).map(|h| branch_from_head(&h)).unwrap_or_default()
+}
+
+/// Что просит инструмент, простыми словами: («хочет изменить файл», «feed.rs»).
+/// `tool` — строка вида «Edit: C:\\p\\src\\feed.rs» (инструмент и главное из его параметров).
+pub fn ask_phrase(tool: &str) -> (String, String) {
+    let (name, detail) = tool.split_once(": ").unwrap_or((tool, ""));
+    let base = |p: &str| p.rsplit(['/', '\\']).find(|x| !x.is_empty()).unwrap_or(p).to_string();
+    let host = |u: &str| {
+        let u = u.split("://").nth(1).unwrap_or(u);
+        u.split('/').next().unwrap_or(u).trim_start_matches("www.").to_string()
+    };
+    let short = |s: &str| one_line(s, 60);
+    let (verb, target) = match name {
+        "" => ("просит разрешение", String::new()),
+        "Edit" | "MultiEdit" | "NotebookEdit" => ("хочет изменить файл", base(detail)),
+        "Write" => ("хочет создать файл", base(detail)),
+        "Read" => ("хочет прочитать файл", base(detail)),
+        "Bash" | "PowerShell" => ("хочет выполнить команду", short(detail)),
+        "WebFetch" => ("хочет открыть сайт", host(detail)),
+        "WebSearch" => ("хочет поискать в интернете", short(detail)),
+        "Glob" | "Grep" => ("хочет поискать в файлах", short(detail)),
+        "Task" | "Agent" => ("хочет запустить помощника", short(detail)),
+        n if n.starts_with("mcp__") => ("хочет использовать", n.trim_start_matches("mcp__").replace("__", " · ")),
+        n => ("хочет использовать", n.to_string()),
+    };
+    (verb.to_string(), target)
+}
+
+/// «работал меньше минуты», «работал 6 мин», «работал 1 ч 20 мин».
+pub fn fmt_worked(secs: u64) -> String {
+    match secs / 60 {
+        0 => "работал меньше минуты".into(),
+        m @ 1..=59 => format!("работал {} мин", m),
+        m => format!("работал {} ч {} мин", m / 60, m % 60),
+    }
 }
 
 /// «сейчас», «5 мин», «2 ч» — сколько агент в этом состоянии.
@@ -407,6 +449,8 @@ fn json_str(b: &[u8], mut i: usize) -> Option<(String, usize)> {
                     b't' => out.push(b'\t'),
                     b'r' => out.push(b'\r'),
                     b'b' | b'f' => out.push(b' '),
+                    // Битая «\u» (не четыре hex-цифры) — не повод терять весь JSON: берём букву как есть.
+                    b'u' if hex4(b, i + 1).is_none() => out.push(b'u'),
                     b'u' => {
                         let hi = hex4(b, i + 1)?;
                         i += 4;
@@ -469,6 +513,18 @@ mod tests {
 
     fn up(id: &str, state: AgentState) -> Update {
         Update { id: id.into(), name: Some("pill".into()), state, note: None, answerable: false, extra: Extra::default() }
+    }
+
+    #[test]
+    fn phrases() {
+        let p = |t: &str| ask_phrase(t);
+        assert_eq!(p("Edit: C:\\p\\src\\ui\\feed.rs"), ("хочет изменить файл".into(), "feed.rs".into()));
+        assert_eq!(p("Write: /home/a/new.txt"), ("хочет создать файл".into(), "new.txt".into()));
+        assert_eq!(p("Bash: cargo build --release"), ("хочет выполнить команду".into(), "cargo build --release".into()));
+        assert_eq!(p("WebFetch: https://www.example.com/a/b"), ("хочет открыть сайт".into(), "example.com".into()));
+        assert_eq!(p("mcp__github__create_issue"), ("хочет использовать".into(), "github · create_issue".into()));
+        assert_eq!(p(""), ("просит разрешение".into(), String::new()));
+        assert_eq!((fmt_worked(30), fmt_worked(360), fmt_worked(4800)), ("работал меньше минуты".into(), "работал 6 мин".into(), "работал 1 ч 20 мин".into()));
     }
 
     #[test]
@@ -567,7 +623,7 @@ mod tests {
         assert_eq!(a.attention(), Some((true, 2)));
         assert_eq!(a.list[1].note, "запрос");
         // Событие без имени и заметки сохраняет старые; «ждёт ответа» молчит.
-        assert_eq!(a.apply(Update { id: "s2".into(), name: None, state: AgentState::Done, note: None, answerable: false, extra: Extra::default() }, now), Some(Notice::Done { name: "site".into(), text: "запрос".into() }));
+        assert_eq!(a.apply(Update { id: "s2".into(), name: None, state: AgentState::Done, note: None, answerable: false, extra: Extra::default() }, now), Some(Notice::Done { name: "site".into(), text: "запрос".into(), secs: 0 }));
         assert_eq!(a.apply(up("s2", AgentState::Wait), now), None);
         // Разрешили в окне агента: карточку убрать.
         assert_eq!(a.apply(up("s1", AgentState::Work), now), Some(Notice::Resolved));
@@ -606,3 +662,4 @@ mod tests {
         assert_eq!(fmt_age(Duration::from_secs(3 * 3600)), "3 ч");
     }
 }
+
