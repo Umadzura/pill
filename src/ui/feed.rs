@@ -8,7 +8,7 @@ use windows::Win32::Graphics::Gdi::*;
 use super::paint::*;
 use crate::app::{Hit, State};
 use crate::feat::agents::{fmt_age, Agent, AgentState};
-use crate::feat::notifs::{self, Notif};
+use crate::feat::notifs::{self, Group, Notif};
 
 /// Высота карточки агента и шаг между карточками.
 const CARD_H: i32 = 50;
@@ -16,7 +16,9 @@ const CARD_STEP: i32 = 56;
 /// Сколько карточек видно сразу, остальные листаются колесом.
 const CARDS: usize = 5;
 const LIST_TOP: i32 = 90;
-const NOTIF_H: i32 = 28;
+/// Карточка чата на странице уведомлений и шаг между ними.
+const NOTIF_H: i32 = 46;
+const NOTIF_STEP: i32 = 50;
 
 fn state_color(s: AgentState) -> COLORREF {
     match s {
@@ -145,35 +147,53 @@ unsafe fn notifs_page(p: &mut Painter, w: i32, h: i32, list: &[Notif]) {
         return;
     }
     let now_ft = crate::sys::toasts::now_filetime();
-    for n in list {
-        if p.s(y + NOTIF_H) > h - p.s(12) {
+    let groups: Vec<Group> = notifs::groups(list);
+    let mut app = "";
+    for g in &groups {
+        let label = g.app != app;
+        if p.s(y + NOTIF_H + if label { 20 } else { 0 }) > h - p.s(10) {
             break;
         }
-        let row = RECT { left: p.s(20), top: p.s(y), right: w - p.s(20), bottom: p.s(y + NOTIF_H - 2) };
-        y += NOTIF_H;
-        let hit = Hit::NotifDrop(n.id);
+        if label {
+            // Подпись программы и сколько от неё уведомлений.
+            app = &g.app;
+            let total: usize = groups.iter().filter(|x| x.app == g.app).map(|x| x.count).sum();
+            let r = RECT { left: p.s(22), top: p.s(y), right: w - p.s(22), bottom: p.s(y + 18) };
+            p.text(p.f.small, &format!("{} · {}", g.app, total), r, DIM, DT_LEFT | DT_END_ELLIPSIS);
+            y += 20;
+        }
+        let row = RECT { left: p.s(20), top: p.s(y), right: w - p.s(20), bottom: p.s(y + NOTIF_H) };
+        y += NOTIF_STEP;
+        let hit = Hit::NotifGroup(g.newest);
         let hov = p.hovered(hit);
-        if hov {
-            p.fill(row, R_ROW, HOVER);
+        p.fill(row, R_TILE, if hov { HOVER } else { PANEL });
+        // Кружок с первой буквой отправителя, цвет по имени.
+        let (d, mid) = (p.s(28), (row.top + row.bottom) / 2);
+        let av = RECT { left: row.left + p.s(10), top: mid - d / 2, right: row.left + p.s(10) + d, bottom: mid - d / 2 + d };
+        p.fill(av, R_PILL, super::mascot::body_color(&g.title));
+        let letter: String = g.title.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().collect()).unwrap_or_default();
+        p.text(p.f.bold, &letter, av, rgb(17, 17, 17), DT_CENTER);
+
+        let (left, right) = (row.left + p.s(48), row.right - p.s(12));
+        let top = RECT { left, top: row.top + p.s(5), right, bottom: row.top + p.s(25) };
+        let nw = p.measure(p.f.bold, &g.title).min(right - left - p.s(110));
+        p.text(p.f.bold, &g.title, RECT { right: left + nw, ..top }, FG, DT_LEFT | DT_END_ELLIPSIS);
+        if g.count > 1 {
+            let n = g.count.to_string();
+            let cw = p.measure(p.f.small, &n) + p.s(12);
+            let chip = RECT { left: left + nw + p.s(8), top: top.top + p.s(2), right: left + nw + p.s(8) + cw, bottom: top.bottom - p.s(2) };
+            p.fill(chip, R_PILL, if hov { TRACK } else { HOVER });
+            p.text(p.f.small, &n, chip, DIM, DT_CENTER);
         }
-        // Программа, заголовок, текст.
-        let mut x = row.left + p.s(12);
-        let aw = p.measure(p.f.small, &n.app).min(p.s(110));
-        p.text(p.f.small, &n.app, RECT { left: x, right: x + aw, ..row }, ACCENT, DT_LEFT | DT_END_ELLIPSIS);
-        x += aw + p.s(10);
-        let tw = p.measure(p.f.normal, &n.title).min(p.s(170));
-        p.text(p.f.normal, &n.title, RECT { left: x, right: x + tw, ..row }, FG, DT_LEFT | DT_END_ELLIPSIS);
-        x += tw + p.s(10);
-        let right = row.right - p.s(64);
-        if right > x {
-            p.text(p.f.small, &n.body, RECT { left: x, right, ..row }, DIM, DT_LEFT | DT_END_ELLIPSIS);
-        }
-        let tail = RECT { left: row.right - p.s(60), right: row.right - p.s(10), ..row };
+        let tail = RECT { left: right - p.s(52), ..top };
         if hov {
             p.text(p.f.icon, I_DEL, tail, FG, DT_RIGHT);
         } else {
-            p.text(p.f.small, &fmt_age(notifs::age(n.created, now_ft)), tail, DIM, DT_RIGHT);
+            p.text(p.f.small, &fmt_age(notifs::age(g.created, now_ft)), tail, DIM, DT_RIGHT);
         }
+        // Вторая строка: последнее сообщение чата.
+        let body = g.last.last().map(String::as_str).unwrap_or("");
+        p.text(p.f.small, body, RECT { left, top: row.top + p.s(24), right, bottom: row.bottom - p.s(5) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
         p.hit(row, hit);
     }
 }
