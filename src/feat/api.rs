@@ -377,8 +377,9 @@ pub unsafe fn on_events(hwnd: HWND) {
                         peek::show(hwnd, pk, if answerable { None } else { Some(8000) });
                         sound(MB_ICONQUESTION);
                     }
-                    Some(agents::Notice::Done { name, text }) => {
-                        let pk = Peek::new(PeekKind::Done, "Claude Code".into(), format!("{}: закончил", name), text);
+                    Some(agents::Notice::Done { name, text, secs }) => {
+                        let _ = text;
+                        let pk = Peek::new(PeekKind::Done, name.clone(), format!("{} готов", name), agents::fmt_worked(secs));
                         peek::show(hwnd, pk, Some(4000));
                         sound(MB_ICONASTERISK);
                     }

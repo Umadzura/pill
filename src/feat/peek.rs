@@ -16,8 +16,8 @@ use crate::shell::layout;
 
 /// Ширина карточки уведомления и «агент закончил» (логические px).
 pub const W: i32 = 440;
-/// Ширина карточки с просьбой о разрешении: в неё должны влезть строки кода.
-pub const W_ASK: i32 = 600;
+/// Ширина карточки с просьбой о разрешении (в раскрытом «подробнее» видны строки кода).
+pub const W_ASK: i32 = 520;
 /// На сколько кнопка «Тишина на час» выключает карточки уведомлений.
 const QUIET: Duration = Duration::from_secs(3600);
 
@@ -49,6 +49,8 @@ pub struct Peek {
     pub stat: (usize, usize),
     /// Просьба агента: можно ли ответить «всегда» (хук прислал готовое правило).
     pub can_always: bool,
+    /// Просьба агента: раскрыто «подробнее» (запрос человека и строки кода).
+    pub more: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -63,11 +65,13 @@ pub enum PeekHit {
     Open,
     /// Час не показывать карточки уведомлений.
     Quiet,
+    /// Просьба агента: показать или спрятать подробности.
+    More,
 }
 
 impl Peek {
     pub fn new(kind: PeekKind, app: String, title: String, body: String) -> Peek {
-        Peek { kind, app, title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false }
+        Peek { kind, app, title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false, more: false }
     }
     pub fn answerable(&self) -> bool {
         matches!(self.kind, PeekKind::Ask { answerable: true, .. })
@@ -95,8 +99,15 @@ impl Peek {
                 let text = if self.lines.len() > 1 { self.lines.len() as i32 * 20 } else { 40 };
                 38 + text + if self.hover { 50 } else { 12 }
             }
-            // Шапка с маскотом, строка инструмента, код, кнопки, подсказка.
-            _ if self.answerable() => 88 + self.code_height() + 10 + 28 + 10 + 18 + 12,
+            // Маскот и одна фраза, кнопки; в «подробнее» ещё запрос человека и строки кода.
+            _ if self.answerable() => {
+                if self.more {
+                    78 + 22 + self.code_height() + 12 + 28 + 16
+                } else {
+                    78 + 28 + 16
+                }
+            }
+            PeekKind::Done => 78,
             _ => 86,
         }
     }
@@ -203,6 +214,16 @@ pub unsafe fn resolve(hwnd: HWND, id: &str) {
 }
 
 pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
+    if h == PeekHit::More {
+        // Подробности меняют только высоту карточки, ответа нет.
+        st(|s| {
+            if let Some(p) = &mut s.peek {
+                p.more = !p.more;
+            }
+        });
+        layout(hwnd);
+        return Redraw::None;
+    }
     let (ask, aumid, can_always) = st(|s| match &s.peek {
         Some(p @ Peek { kind: PeekKind::Ask { id, .. }, .. }) => (Some(id.clone()), String::new(), p.can_always),
         Some(p) => (None, p.aumid.clone(), false),

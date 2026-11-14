@@ -97,7 +97,10 @@ unsafe fn card(p: &mut Painter, s: &State, w: i32, y: i32, i: usize, a: &Agent, 
 
     let low = RECT { left, top: row.top + p.s(26), right, bottom: row.bottom - p.s(6) };
     let done = matches!(a.state, AgentState::Done | AgentState::Gone);
-    if done && !a.answer.is_empty() {
+    if a.state == AgentState::Ask && !a.tool.is_empty() {
+        let (verb, target) = crate::feat::agents::ask_phrase(&a.tool);
+        p.text(p.f.small, &format!("{} {}", verb, target), low, WARN, DT_LEFT | DT_END_ELLIPSIS);
+    } else if done && !a.answer.is_empty() {
         p.text(p.f.small, &format!("ответ: {}", a.answer), low, DIM, DT_LEFT | DT_END_ELLIPSIS);
     } else {
         // Справа инструмент (не шире половины), слева запрос человека.
