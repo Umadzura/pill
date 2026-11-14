@@ -23,6 +23,8 @@ features = [
     "ApplicationModel",
     "UI_Notifications",
     "UI_Notifications_Management",
+    # Событие «сменилось активное окно» (SetWinEventHook) для подсказки режимов ПК
+    "Win32_UI_Accessibility",
     # Свои COM-колбэки (события громкости)
     "implement",
     # Win32

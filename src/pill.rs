@@ -109,6 +109,8 @@ pub struct Facts {
     pub task_bar: Option<u8>,
     /// Пропущенные чужие уведомления.
     pub unread: usize,
+    /// Режим ПК, если не обычный: «Рендер» перед временем.
+    pub mode: Option<String>,
     /// Есть обложка играющего трека.
     pub art: bool,
     pub playing: bool,
@@ -131,6 +133,7 @@ pub fn assemble(f: Facts) -> View {
     if f.mic || f.cam {
         parts.extend(f.busy_app.map(|a| a.chars().take(BUSY_APP_MAX).collect::<String>()).filter(|a| !a.is_empty()));
     }
+    parts.extend(f.mode);
     parts.push(f.time);
     parts.extend(f.tasks);
     if let Some(left) = f.timer_left {
@@ -178,6 +181,7 @@ pub fn view(s: &State) -> View {
         battery: battery_short(s.osd.battery),
         agents: s.agents.attention().map(|(_, n)| n),
         task_bar: s.tasks.bar(),
+        mode: (s.settings.pc_mode != 0).then(|| crate::feat::modes::NAMES[s.settings.pc_mode.min(3) as usize].to_string()),
         ..Facts::default()
     };
     {

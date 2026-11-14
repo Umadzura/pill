@@ -13,6 +13,7 @@ pub mod power;
 pub mod sysinfo;
 pub mod theme;
 pub mod toasts;
+pub mod wnd;
 
 use windows::Win32::System::SystemInformation::GetLocalTime;
 

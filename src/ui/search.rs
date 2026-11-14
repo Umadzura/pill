@@ -217,6 +217,10 @@ unsafe fn list_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
                 clip_icon(p, row, e, true);
                 (one_line(&e.text, 200), FG)
             }
+            CmdRes::PcMode(m) => {
+                p.text(p.f.icon, I_THEME, ir, FAINT, DT_LEFT);
+                (format!("Режим ПК: {}", crate::feat::modes::NAMES[*m as usize]), FG)
+            }
             CmdRes::Calc(_) => (String::new(), FG),
         };
         p.text(p.f.normal, &text, RECT { left: row.left + p.s(38), right: row.right - p.s(64), ..row }, color, DT_LEFT | DT_END_ELLIPSIS);
