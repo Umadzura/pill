@@ -81,6 +81,8 @@ pub const MENU_DOT: usize = 12;
 pub const MENU_SOUND: usize = 13;
 /// Тихие часы 23–8 вкл/выкл.
 pub const MENU_QUIET: usize = 14;
+/// Открыть окно настроек.
+pub const MENU_SETTINGS: usize = 15;
 /// Четыре пункта подменю «Сворачиваться после ухода курсора»: 20..=23.
 pub const MENU_DELAY: usize = 20;
 pub const MENU_DELAY_LAST: usize = 23;

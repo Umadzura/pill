@@ -503,6 +503,8 @@ pub unsafe fn on_tray(hwnd: HWND, lparam: LPARAM) {
 pub unsafe fn tray_menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else { return };
     let auto = if sys::autostart::enabled() { MF_CHECKED } else { MF_UNCHECKED };
+    let _ = AppendMenuW(menu, MF_STRING, MENU_SETTINGS, w!("Настройки…"));
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
     let _ = AppendMenuW(menu, MF_STRING | auto, MENU_AUTOSTART, w!("Запускать вместе с Windows"));
     let mut cfg = st(|s| s.settings.clone());
     let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
@@ -527,6 +529,7 @@ pub unsafe fn tray_menu(hwnd: HWND) {
     let _ = DestroyMenu(menu);
     match cmd.0 as usize {
         MENU_AUTOSTART => sys::autostart::set(!sys::autostart::enabled()),
+        MENU_SETTINGS => ui::settings::open(hwnd),
         MENU_EXIT => {
             let _ = DestroyWindow(hwnd);
         }

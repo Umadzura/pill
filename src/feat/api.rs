@@ -312,6 +312,11 @@ pub unsafe fn on_events(hwnd: HWND) {
                 Notice::Done(name) => flash = Some((format!("✓ {}", name), false, 4000)),
                 Notice::Failed(name) => flash = Some((format!("✗ {}: ошибка", name), true, 8000)),
             },
+            Event::Open(tab, query) if tab == "settings" => {
+                // Окно настроек; q — номер раздела (для снимков экрана).
+                crate::ui::settings::open(hwnd);
+                crate::ui::settings::show_page(query.parse().unwrap_or(0));
+            }
             Event::Open(tab, query) => {
                 use crate::app::Tab;
                 let t = match tab.as_str() {

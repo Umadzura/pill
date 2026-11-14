@@ -23,6 +23,8 @@ features = [
     "ApplicationModel",
     "UI_Notifications",
     "UI_Notifications_Management",
+    # Тёмный заголовок окна настроек (DwmSetWindowAttribute)
+    "Win32_Graphics_Dwm",
     # Свои COM-колбэки (события громкости)
     "implement",
     # Win32
