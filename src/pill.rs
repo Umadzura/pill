@@ -34,7 +34,8 @@ impl Lead {
         match self {
             Lead::Mic | Lead::Cam => DOT + 4,
             Lead::Art => ART + 10,
-            Lead::Mascot { count } => MASCOT_W + 8 + if count > 1 { 12 } else { 0 },
+            // Стопка до трёх маскотов (каждый следующий сдвинут на STACK_DX) и «+N», если агентов больше.
+            Lead::Mascot { count } => MASCOT_W + (count.clamp(1, 3) as i32 - 1) * STACK_DX + 8 + if count > 3 { 16 } else { 0 },
         }
     }
 }
@@ -77,6 +78,9 @@ impl View {
         (if self.unread > 0 { UNREAD_GAP + UNREAD_W } else { 0 }) + if self.viz { EQ_W + 10 } else { 0 }
     }
 }
+
+/// Сдвиг следующего маскота в стопке (логические px).
+pub const STACK_DX: i32 = 9;
 
 /// Зазор между точками микрофона/камеры и следующим значком.
 pub const DOT_GAP: i32 = 4;
@@ -245,7 +249,7 @@ mod tests {
         assert_eq!(v.dim_from.map(|i| &v.text[i..]), Some("87%"));
         assert_eq!(v.lead, vec![Lead::Mic, Lead::Mascot { count: 2 }, Lead::Art]);
         // точка + зазор, обложка, маскот с числом
-        assert_eq!(v.left_width(), (DOT + 4) + DOT_GAP + (ART + 10) + (MASCOT_W + 8 + 12));
+        assert_eq!(v.left_width(), (DOT + 4) + DOT_GAP + (ART + 10) + (MASCOT_W + STACK_DX + 8));
         assert_eq!(v.right_width(), EQ_W + 10);
     }
 

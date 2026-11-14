@@ -101,15 +101,21 @@ unsafe fn draw_left(p: &mut Painter, s: &State, lead: &[Lead], mut x: i32, mid: 
                 }
             }
             // Маскот главного агента (кому нужно разрешение, иначе работающий), число — если их больше одного.
+            // Стопка маскотов: главный (кому нужно разрешение, иначе работающий) впереди и ярко,
+            // до двух следующих за ним тусклее; если агентов больше трёх — «+N».
             Lead::Mascot { count } => {
-                if let Some(a) = mascot::lead(&s.agents.list) {
-                    let px = p.s(2);
-                    mascot::draw(p, x, mid - px * mascot::H / 2, px, a, s.notif_flip);
-                    if count > 1 {
-                        let tx = x + px * mascot::W + p.s(4);
-                        let r = RECT { left: tx, top: 0, right: tx + p.s(16), bottom: mid * 2 };
-                        p.text(p.f.small, &count.to_string(), r, DIM, DT_LEFT);
-                    }
+                let px = p.s(2);
+                let y = mid - px * mascot::H / 2;
+                let stack = mascot::stack(&s.agents.list);
+                let shown = stack.len().min(3);
+                for i in (0..shown).rev() {
+                    let k = [1.0, 0.45, 0.22][i];
+                    mascot::draw_faded(p, x + p.s(pill::STACK_DX) * i as i32, y, px, stack[i], s.notif_flip, k);
+                }
+                if count > 3 {
+                    let tx = x + px * mascot::W + p.s(pill::STACK_DX * 2 + 4);
+                    let r = RECT { left: tx, top: 0, right: tx + p.s(18), bottom: mid * 2 };
+                    p.text(p.f.small, &format!("+{}", count - 3), r, DIM, DT_LEFT);
                 }
             }
         }
