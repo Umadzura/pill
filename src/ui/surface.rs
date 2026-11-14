@@ -309,6 +309,13 @@ pub unsafe fn with(w: i32, h: i32, cap: Option<(i32, i32)>, f: impl FnOnce(&Surf
     });
 }
 
+/// Временный буфер w×h для другого окна (окно настроек): живёт только на время `f`.
+pub unsafe fn offscreen(w: i32, h: i32, f: impl FnOnce(&Surface)) {
+    if let Some(s) = Surface::new(w, h) {
+        f(&s);
+    }
+}
+
 /// Буфер последнего кадра как есть (для покадровой перерисовки визуализатора).
 pub unsafe fn with_current(f: impl FnOnce(&Surface)) {
     SURFACE.with(|cell| {

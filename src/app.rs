@@ -54,8 +54,10 @@ pub enum Hit {
     Clip(ClipHit),
     /// Строка результата в поиске (номер в `cmd::results`).
     Cmd(usize),
-    /// Шестерёнка в шапке: настройки (пока это меню, что и у значка в трее).
+    /// Шестерёнка в шапке: окно настроек.
     Settings,
+    /// Окно настроек: разделы, переключатели, кнопки.
+    Set(crate::ui::settings::SetHit),
     /// Режим строки поиска (`cmd::MODE_*`); лупа в шапке — режим «Всё».
     Mode(u8),
     /// Плитка часто запускаемой программы (индекс в `cmd.apps`).
@@ -118,6 +120,8 @@ pub struct State {
     pub feed_scroll: usize,
     /// «Музыка»: вместо спектра показывать текст песни.
     pub lyrics: bool,
+    /// Открытое окно настроек.
+    pub setwin: Option<crate::ui::settings::SetWin>,
     /// Настройки из `%APPDATA%\Pill\settings.txt`.
     pub settings: crate::feat::settings::Settings,
 }
@@ -155,6 +159,7 @@ pub unsafe fn init_state() {
         feed_notifs: false,
         feed_scroll: 0,
         lyrics: false,
+        setwin: None,
         settings: crate::feat::settings::Settings::load(),
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(s));
@@ -201,9 +206,12 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
             Redraw::None
         }
         Hit::Settings => {
-            shell::tray_menu(hwnd);
+            input::close_panel(hwnd, false);
+            ui::settings::open(hwnd);
             Redraw::None
         }
+        // Клики окна настроек обрабатывает его собственная оконная процедура.
+        Hit::Set(_) => Redraw::None,
         Hit::AppTile(i) => {
             cmd::run_app(hwnd, i);
             Redraw::None

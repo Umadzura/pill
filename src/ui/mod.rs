@@ -8,6 +8,7 @@ mod mascot;
 mod music;
 mod paint;
 mod peek;
+pub mod settings;
 pub mod search;
 mod surface;
 mod sys;
