@@ -48,7 +48,7 @@ pub enum Event {
     Task { id: String, title: Option<String>, progress: Option<u8>, state: TaskState },
     Agent(agents::Update),
     /// Раскрыть панель на вкладке (или свернуть): для скриптов и для сверки вида по снимку экрана.
-    Open(String),
+    Open(String, String),
 }
 
 /// Ответ для клиента: код и текст.
@@ -132,7 +132,7 @@ pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
     }
     match path {
         "/ping" => (PONG, None),
-        "/open" => (OK, Some(Event::Open(params.get("tab").map(|t| t.trim().to_ascii_lowercase()).unwrap_or_default()))),
+        "/open" => (OK, Some(Event::Open(params.get("tab").map(|t| t.trim().to_ascii_lowercase()).unwrap_or_default(), clip(params.get("q").map(|q| q.as_str()).unwrap_or(""), MAX_TITLE)))),
         "/notify" => {
             let text = clip(params.get("text").map(|s| s.trim()).unwrap_or(""), MAX_TEXT);
             if text.is_empty() {
@@ -303,12 +303,11 @@ pub unsafe fn on_events(hwnd: HWND) {
                 Notice::Done(name) => flash = Some((format!("✓ {}", name), false, 4000)),
                 Notice::Failed(name) => flash = Some((format!("✗ {}: ошибка", name), true, 8000)),
             },
-            Event::Open(tab) => {
+            Event::Open(tab, query) => {
                 use crate::app::Tab;
                 let t = match tab.as_str() {
                     "music" => Some(Tab::Music),
-                    "clip" => Some(Tab::Clipboard),
-                    "cmd" => Some(Tab::Commands),
+                    "cmd" | "apps" | "clip" | "act" => Some(Tab::Commands),
                     "ctl" => Some(Tab::Controls),
                     "mon" => Some(Tab::System),
                     "feed" | "notifs" => Some(Tab::Feed),
@@ -321,6 +320,15 @@ pub unsafe fn on_events(hwnd: HWND) {
                             s.shell.sys_page = t;
                         }
                         s.feed_notifs = tab == "notifs";
+                        if t == Tab::Commands {
+                            s.input.mode = ["cmd", "apps", "clip", "act"].iter().position(|m| *m == tab).unwrap_or(0) as u8;
+                            s.input.back = Some(Tab::Music);
+                            // Запрос можно подставить сразу: так снимают экран с результатами.
+                            s.input.text = query.clone();
+                            s.input.sel = 0;
+                            s.input.scroll = 0;
+                            s.cmd.apps = crate::feat::cmd::scan();
+                        }
                     });
                 }
                 crate::shell::set_expanded(hwnd, t.is_some());

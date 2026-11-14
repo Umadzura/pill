@@ -14,6 +14,74 @@ const MAX_LEN: usize = 20_000;
 pub struct Entry {
     pub text: String,
     pub pinned: bool,
+    /// Когда скопировано, секунды Unix. 0 — неизвестно (запись из файла старого формата).
+    pub time: u64,
+}
+
+/// Что за запись, по самому тексту: от этого зависит значок в списке.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Kind {
+    Text,
+    Link,
+    Path,
+    Color(u8, u8, u8),
+}
+
+pub fn kind(text: &str) -> Kind {
+    let s = text.trim();
+    if s.is_empty() || s.contains(char::is_whitespace) {
+        return Kind::Text;
+    }
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            let v = u32::from_str_radix(hex, 16).unwrap_or(0);
+            return Kind::Color((v >> 16) as u8, (v >> 8) as u8, v as u8);
+        }
+    }
+    let low = s.to_ascii_lowercase();
+    if low.starts_with("http://") || low.starts_with("https://") || low.starts_with("www.") {
+        return Kind::Link;
+    }
+    let b = s.as_bytes();
+    if s.starts_with("\\\\") || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')) {
+        return Kind::Path;
+    }
+    // «github.com/user/repo»: домен с точкой, потом путь.
+    if let Some((host, _)) = s.split_once('/') {
+        if host.contains('.') && host.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-') {
+            return Kind::Link;
+        }
+    }
+    Kind::Text
+}
+
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// «сейчас», «5 мин», «2 ч», «3 д». Пусто, если время записи неизвестно.
+pub fn age_text(time: u64, now: u64) -> String {
+    if time == 0 {
+        return String::new();
+    }
+    let s = now.saturating_sub(time);
+    match s {
+        0..=59 => "сейчас".into(),
+        60..=3599 => format!("{} мин", s / 60),
+        3600..=86_399 => format!("{} ч", s / 3600),
+        _ => format!("{} д", s / 86_400),
+    }
+}
+
+/// Строка файла истории → запись. Новый формат: флаг, время, текст; в старом времени нет.
+/// Табы внутри текста экранированы, поэтому лишний таб в строке — это всегда разделитель.
+fn parse_line(line: &str) -> Option<Entry> {
+    let (flag, rest) = line.split_once('\t')?;
+    let (time, text) = match rest.split_once('\t') {
+        Some((t, text)) if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) => (t.parse().unwrap_or(0), text),
+        _ => (0, rest),
+    };
+    Some(Entry { text: unescape(text), pinned: flag == "P", time })
 }
 
 pub struct History {
@@ -26,10 +94,7 @@ impl History {
         let path = std::env::var("APPDATA").ok().map(|a| PathBuf::from(a).join("Pill").join("clipboard.txt"));
         let mut items = Vec::new();
         if let Some(data) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
-            for line in data.lines() {
-                let Some((flag, text)) = line.split_once('\t') else { continue };
-                items.push(Entry { text: unescape(text), pinned: flag == "P" });
-            }
+            items.extend(data.lines().filter_map(parse_line));
         }
         History { items, path }
     }
@@ -42,6 +107,8 @@ impl History {
         let mut out = String::new();
         for e in &self.items {
             out.push_str(if e.pinned { "P\t" } else { "-\t" });
+            out.push_str(&e.time.to_string());
+            out.push('\t');
             out.push_str(&escape(&e.text));
             out.push('\n');
         }
@@ -67,7 +134,7 @@ impl History {
         if let Some(pos) = self.items.iter().position(|e| e.text == text) {
             pinned = self.items.remove(pos).pinned;
         }
-        self.items.insert(0, Entry { text, pinned });
+        self.items.insert(0, Entry { text, pinned, time: now_secs() });
         let mut unpinned = 0;
         self.items.retain(|e| {
             if e.pinned {
@@ -106,21 +173,12 @@ impl History {
 /// Зоны клика вкладки «Буфер». Индекс — в `History::items`, а не номер строки на экране.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ClipHit {
-    Row(usize),
     Pin(usize),
     Del(usize),
 }
 
-pub unsafe fn on_hit(hwnd: HWND, h: ClipHit) -> Redraw {
+pub unsafe fn on_hit(_hwnd: HWND, h: ClipHit) -> Redraw {
     match h {
-        ClipHit::Row(i) => {
-            // Запись могла пропасть между отрисовкой и кликом: тогда молча выходим.
-            let text = st(|s| s.clip.items.get(i).map(|e| e.text.clone()));
-            if let Some(t) = text {
-                crate::input::paste(hwnd, &t);
-            }
-            Redraw::None
-        }
         ClipHit::Pin(i) => {
             st(|s| s.clip.toggle_pin(i));
             Redraw::Content
@@ -137,7 +195,7 @@ pub unsafe fn on_update(hwnd: HWND) -> bool {
     let Some(text) = crate::sys::clipboard::read_text(hwnd) else { return false };
     st(|s| {
         s.clip.add(text);
-        s.shell.expanded && s.shell.tab == crate::app::Tab::Clipboard
+        s.shell.expanded && s.shell.tab == crate::app::Tab::Commands
     })
 }
 
@@ -182,6 +240,24 @@ mod tests {
     fn escape_roundtrip() {
         let s = "a\\b\nc\td\r";
         assert_eq!(unescape(&escape(s)), s);
+    }
+
+    #[test]
+    fn file_formats_and_kinds() {
+        // Старая строка без времени и новая со временем; таб в тексте экранирован.
+        let old = parse_line("P\tпривет\\tмир").unwrap();
+        assert_eq!((old.text.as_str(), old.pinned, old.time), ("привет\tмир", true, 0));
+        let new = parse_line("-\t1700000000\t12345").unwrap();
+        assert_eq!((new.text.as_str(), new.pinned, new.time), ("12345", false, 1_700_000_000));
+        // Старая запись из одних цифр не принимается за время.
+        assert_eq!(parse_line("-\t12345").unwrap().text, "12345");
+
+        assert_eq!(kind("https://example.com/a"), Kind::Link);
+        assert_eq!(kind("github.com/user/repo"), Kind::Link);
+        assert_eq!(kind("#0A84FF"), Kind::Color(0x0A, 0x84, 0xFF));
+        assert_eq!(kind("C:\\Users\\me\\file.txt"), Kind::Path);
+        assert_eq!(kind("cargo build --release"), Kind::Text);
+        assert_eq!((age_text(0, 100), age_text(100, 130), age_text(100, 100 + 7200)), (String::new(), "сейчас".into(), "2 ч".into()));
     }
 
     #[test]

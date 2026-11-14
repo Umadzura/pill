@@ -9,10 +9,18 @@ use crate::app::{st, State};
 use crate::input::close_panel;
 use crate::sys;
 
-/// Ярлыки, найденные при последнем открытии командной строки.
-#[derive(Default)]
+/// Режимы строки поиска: что попадает в список.
+pub const MODE_ALL: u8 = 0;
+pub const MODE_APPS: u8 = 1;
+pub const MODE_CLIP: u8 = 2;
+pub const MODE_ACT: u8 = 3;
+pub const MODES: [&str; 4] = ["Всё", "Программы", "Буфер", "Действия"];
+
 pub struct CmdState {
+    /// Ярлыки, найденные при последнем открытии поиска.
     pub apps: Vec<App>,
+    /// Сколько раз что запускали: (имя в нижнем регистре, число). Файл `launches.txt`.
+    pub freq: Vec<(String, u32)>,
 }
 
 /// Строка результата в командной строке.
@@ -24,26 +32,98 @@ pub enum CmdRes {
     Run(String),
     /// Уже запущенный таймер (индекс в `timers.list`): клик отменяет.
     Active(usize),
+    /// Запись буфера (индекс в `clip.items`): вставить.
+    Clip(usize),
 }
 
+/// Что показать в списке поиска для текущего запроса и режима. Порядок = порядок на экране.
 pub fn results(s: &State) -> Vec<CmdRes> {
     let q = s.input.text.trim();
+    let mode = s.input.mode;
+    if mode == MODE_CLIP {
+        return s.clip.view(q).into_iter().map(CmdRes::Clip).collect();
+    }
     let mut out = Vec::new();
     if q.is_empty() {
-        out.extend((0..s.timers.list.len()).map(CmdRes::Active));
+        // Пустая строка: закреплённое из буфера и идущие таймеры; в «Программах» — частые.
+        match mode {
+            MODE_APPS => out.extend(frequent(&s.cmd.apps, &s.cmd.freq, 8).into_iter().map(CmdRes::App)),
+            MODE_ALL => out.extend(s.clip.view("").into_iter().filter(|&i| s.clip.items[i].pinned).take(3).map(CmdRes::Clip)),
+            _ => {}
+        }
+        if mode != MODE_APPS {
+            out.extend((0..s.timers.list.len()).map(CmdRes::Active));
+        }
         return out;
     }
-    if let Some(v) = calc(q) {
-        out.push(CmdRes::Calc(fmt_num(v)));
+    let acts = mode != MODE_APPS;
+    if acts {
+        if let Some(v) = calc(q) {
+            out.push(CmdRes::Calc(fmt_num(v)));
+        }
+        if let Some(t) = parse_timer(q) {
+            out.push(CmdRes::Timer(t));
+        }
     }
-    if let Some(t) = parse_timer(q) {
-        out.push(CmdRes::Timer(t));
+    if mode != MODE_ACT && !q.starts_with('>') {
+        let limit = if mode == MODE_APPS { 8 } else { 3 };
+        out.extend(search(&s.cmd.apps, q, limit).into_iter().map(CmdRes::App));
     }
-    if !q.starts_with('>') {
-        out.extend(search(&s.cmd.apps, q, 6).into_iter().map(CmdRes::App));
+    if mode == MODE_ALL && !q.starts_with('>') {
+        out.extend(s.clip.view(q).into_iter().take(2).map(CmdRes::Clip));
     }
-    out.push(CmdRes::Run(q.to_string()));
+    if acts {
+        out.push(CmdRes::Run(q.to_string()));
+    }
     out
+}
+
+/// Часто запускаемые программы: индексы в `apps`, самые частые первыми.
+pub fn frequent(apps: &[App], freq: &[(String, u32)], n: usize) -> Vec<usize> {
+    let mut v: Vec<(u32, usize)> = apps.iter().enumerate().filter_map(|(i, a)| freq.iter().find(|f| f.0 == a.lower).map(|f| (f.1, i))).collect();
+    v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    v.into_iter().take(n).map(|x| x.1).collect()
+}
+
+fn freq_path() -> Option<PathBuf> {
+    std::env::var("APPDATA").ok().map(|a| PathBuf::from(a).join("Pill").join("launches.txt"))
+}
+
+/// Строки «число<TAB>имя».
+pub fn parse_freq(text: &str) -> Vec<(String, u32)> {
+    text.lines().filter_map(|l| l.split_once('\t')).filter_map(|(n, name)| Some((name.to_string(), n.parse().ok()?))).collect()
+}
+
+pub fn load_freq() -> Vec<(String, u32)> {
+    freq_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| parse_freq(&t)).unwrap_or_default()
+}
+
+/// Пишет файл счётчиков. Звать вне `st()`.
+fn save_freq(freq: &[(String, u32)]) {
+    let Some(p) = freq_path() else { return };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let text: String = freq.iter().map(|(name, n)| format!("{}\t{}\n", n, name)).collect();
+    let _ = std::fs::write(p, text);
+}
+
+/// Запустить программу по индексу в `apps` и запомнить запуск.
+pub unsafe fn run_app(hwnd: HWND, i: usize) {
+    let got = st(|s| {
+        let a = s.cmd.apps.get(i)?;
+        let (key, path) = (a.lower.clone(), a.path.to_string_lossy().into_owned());
+        match s.cmd.freq.iter_mut().find(|f| f.0 == key) {
+            Some(f) => f.1 += 1,
+            None => s.cmd.freq.push((key, 1)),
+        }
+        Some((path, s.cmd.freq.clone()))
+    });
+    close_panel(hwnd, false);
+    if let Some((path, freq)) = got {
+        save_freq(&freq);
+        sys::launch::open(&path, None);
+    }
 }
 
 /// Выполнить строку номер `i` из текущих результатов.
@@ -68,11 +148,12 @@ unsafe fn run(hwnd: HWND, res: CmdRes) {
             });
             close_panel(hwnd, true);
         }
-        CmdRes::App(i) => {
-            let path = st(|s| s.cmd.apps.get(i).map(|a| a.path.to_string_lossy().into_owned()));
-            close_panel(hwnd, false);
-            if let Some(p) = path {
-                sys::launch::open(&p, None);
+        CmdRes::App(i) => run_app(hwnd, i),
+        CmdRes::Clip(i) => {
+            // Запись могла пропасть между отрисовкой и нажатием: тогда молча выходим.
+            let text = st(|s| s.clip.items.get(i).map(|e| e.text.clone()));
+            if let Some(t) = text {
+                crate::input::paste(hwnd, &t);
             }
         }
         CmdRes::Run(line) => {

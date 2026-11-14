@@ -1,4 +1,4 @@
-//! Клавиатура и поле ввода (поиск в буфере, командная строка): фокус, символы, стрелки, вставка.
+//! Клавиатура и строка поиска (программы, буфер, действия): фокус, символы, стрелки, вставка.
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Gdi::InvalidateRect;
@@ -6,7 +6,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app::{hwnd_of, st, State, Tab};
-use crate::feat::cmd;
+use crate::feat::cmd::{self, CmdRes, MODES, MODE_CLIP};
 use crate::ids::{TIMER_COLLAPSE, TIMER_PASTE};
 use crate::shell::set_expanded;
 use crate::{sys, ui};
@@ -18,35 +18,55 @@ pub struct Input {
     pub active: bool,
     /// Где был пользователь до нас: туда возвращаем фокус и вставляем.
     prev_fg: isize,
-    /// Выбранная строка и прокрутка списка текущей вкладки.
+    /// Выбранная строка и прокрутка списка.
     pub sel: usize,
     pub scroll: usize,
     pending_paste: bool,
+    /// Режим строки поиска (`cmd::MODE_*`).
+    pub mode: u8,
+    /// Вкладка, с которой открыли поиск: на неё возвращаемся, когда панель свернётся.
+    pub back: Option<Tab>,
 }
 
-/// Включает ввод с клавиатуры: окно становится активным.
-pub unsafe fn activate(hwnd: HWND, tab: Tab) {
+/// Открывает строку поиска в режиме `mode` и включает ввод: окно становится активным.
+pub unsafe fn activate(hwnd: HWND, mode: u8) {
     let fg = GetForegroundWindow();
-    let scan = tab == Tab::Commands;
-    let apps = if scan { cmd::scan() } else { Vec::new() };
+    let apps = cmd::scan();
     st(|s| {
         if fg != hwnd {
             s.input.prev_fg = fg.0 as isize;
         }
-        if s.shell.tab != tab || !s.input.active {
+        if s.shell.tab != Tab::Commands {
+            s.input.back = Some(s.shell.tab);
+            s.input.text.clear();
+        } else if !s.input.active || s.input.mode != mode {
             s.input.text.clear();
         }
-        s.shell.tab = tab;
+        s.shell.tab = Tab::Commands;
+        s.input.mode = mode;
         s.input.active = true;
         s.input.sel = 0;
         s.input.scroll = 0;
-        if scan {
-            s.cmd.apps = apps;
-        }
+        s.cmd.apps = apps;
     });
     set_expanded(hwnd, true);
     sys::launch::force_foreground(hwnd);
     let _ = SetFocus(hwnd);
+    let _ = InvalidateRect(hwnd, None, false);
+}
+
+/// Сменить режим (Tab или клик по режиму). Набранный текст остаётся.
+pub unsafe fn switch_mode(hwnd: HWND, mode: u8) {
+    let typing = st(|s| s.shell.tab == Tab::Commands && s.input.active);
+    if !typing {
+        activate(hwnd, mode);
+        return;
+    }
+    st(|s| {
+        s.input.mode = mode;
+        s.input.sel = 0;
+        s.input.scroll = 0;
+    });
     let _ = InvalidateRect(hwnd, None, false);
 }
 
@@ -99,36 +119,24 @@ pub unsafe fn on_paste_timer(hwnd: HWND) {
     }
 }
 
-/// Хоткей: повторное нажатие на той же вкладке закрывает панель.
-pub unsafe fn on_hotkey(hwnd: HWND, tab: Tab) {
-    let (active, cur) = st(|s| (s.input.active && s.shell.expanded, s.shell.tab));
-    if active && cur == tab {
+/// Хоткей: повторное нажатие в том же режиме закрывает панель.
+pub unsafe fn on_hotkey(hwnd: HWND, mode: u8) {
+    let same = st(|s| s.input.active && s.shell.expanded && s.shell.tab == Tab::Commands && s.input.mode == mode);
+    if same {
         close_panel(hwnd, true);
     } else {
-        activate(hwnd, tab);
+        activate(hwnd, mode);
     }
 }
 
-/// Сколько строк в списке текущей вкладки (для стрелок).
-fn list_len(s: &State) -> usize {
-    match s.shell.tab {
-        Tab::Clipboard => s.clip.view(&s.input.text).len(),
-        Tab::Commands => cmd::results(s).len(),
-        _ => 0,
+/// Запись буфера под выбранной строкой (только в режиме «Буфер»).
+fn selected_clip(s: &State) -> Option<usize> {
+    if s.input.mode != MODE_CLIP {
+        return None;
     }
-}
-
-unsafe fn on_enter(hwnd: HWND) {
-    let (tab, sel) = st(|s| (s.shell.tab, s.input.sel));
-    match tab {
-        Tab::Clipboard => {
-            let text = st(|s| s.clip.view(&s.input.text).get(sel).map(|&i| s.clip.items[i].text.clone()));
-            if let Some(t) = text {
-                paste(hwnd, &t);
-            }
-        }
-        Tab::Commands => cmd::run_index(hwnd, sel),
-        _ => {}
+    match cmd::results(s).get(s.input.sel) {
+        Some(CmdRes::Clip(i)) => Some(*i),
+        _ => None,
     }
 }
 
@@ -145,6 +153,16 @@ pub unsafe fn on_char(hwnd: HWND, c: u32) {
             let cut = s.input.text.rfind(' ').map(|p| p + 1).unwrap_or(0);
             s.input.text.truncate(cut);
         }),
+        0x10 => {
+            // Ctrl+P — закрепить выбранную запись буфера.
+            st(|s| {
+                if let Some(i) = selected_clip(s) {
+                    s.clip.toggle_pin(i);
+                }
+            });
+            let _ = InvalidateRect(hwnd, None, false);
+            return;
+        }
         0x16 => {
             // Ctrl+V в поле ввода — первая строка буфера.
             if let Some(t) = sys::clipboard::read_text(hwnd) {
@@ -167,6 +185,11 @@ pub unsafe fn on_char(hwnd: HWND, c: u32) {
 }
 
 pub unsafe fn on_key(hwnd: HWND, vk: u16) {
+    // Alt+1…9 — выполнить строку по номеру.
+    if (0x31..=0x39).contains(&vk) && GetKeyState(VK_MENU.0 as i32) < 0 {
+        cmd::run_index(hwnd, (vk - 0x31) as usize);
+        return;
+    }
     match VIRTUAL_KEY(vk) {
         VK_ESCAPE => {
             let had = st(|s| {
@@ -182,17 +205,23 @@ pub unsafe fn on_key(hwnd: HWND, vk: u16) {
                 close_panel(hwnd, true);
             }
         }
-        VK_RETURN => on_enter(hwnd),
+        VK_RETURN => {
+            let sel = st(|s| s.input.sel);
+            cmd::run_index(hwnd, sel);
+        }
         VK_UP | VK_DOWN => {
             st(|s| {
-                let n = list_len(s);
+                let n = cmd::results(s).len();
                 if n == 0 {
                     return;
                 }
                 let i = &mut s.input;
                 i.sel = if vk == VK_UP.0 { i.sel.saturating_sub(1) } else { (i.sel + 1).min(n - 1) };
-                let rows = ui::clip::ROWS;
-                if i.sel < i.scroll {
+                // Прокручивается только длинный список режима «Буфер».
+                let rows = ui::search::CLIP_ROWS;
+                if i.mode != MODE_CLIP {
+                    i.scroll = 0;
+                } else if i.sel < i.scroll {
                     i.scroll = i.sel;
                 } else if i.sel >= i.scroll + rows {
                     i.scroll = i.sel + 1 - rows;
@@ -200,18 +229,33 @@ pub unsafe fn on_key(hwnd: HWND, vk: u16) {
             });
             let _ = InvalidateRect(hwnd, None, false);
         }
+        VK_DELETE => {
+            // Del в режиме «Буфер» — убрать выбранную запись.
+            st(|s| {
+                if let Some(i) = selected_clip(s) {
+                    s.clip.remove(i);
+                    let n = cmd::results(s).len();
+                    s.input.sel = s.input.sel.min(n.saturating_sub(1));
+                }
+            });
+            let _ = InvalidateRect(hwnd, None, false);
+        }
         VK_TAB => {
-            let tab = st(|s| s.shell.tab);
-            let next = if tab == Tab::Commands { Tab::Clipboard } else { Tab::Commands };
-            activate(hwnd, next);
+            let back = GetKeyState(VK_SHIFT.0 as i32) < 0;
+            let n = MODES.len() as u8;
+            let mode = st(|s| (s.input.mode + if back { n - 1 } else { 1 }) % n);
+            switch_mode(hwnd, mode);
         }
         _ => {}
     }
 }
 
-/// Колесо во вкладке «Буфер»: прокрутка по две строки.
-pub fn scroll_clip(s: &mut State, notches: i32) {
-    let n = s.clip.view(&s.input.text).len();
-    let max = n.saturating_sub(ui::clip::ROWS);
+/// Колесо в режиме «Буфер»: прокрутка по две строки.
+pub fn scroll_list(s: &mut State, notches: i32) {
+    if s.input.mode != MODE_CLIP {
+        return;
+    }
+    let n = cmd::results(s).len();
+    let max = n.saturating_sub(ui::search::CLIP_ROWS);
     s.input.scroll = (s.input.scroll as i32 - notches * 2).clamp(0, max as i32) as usize;
 }

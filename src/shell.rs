@@ -202,6 +202,10 @@ pub unsafe fn set_expanded(hwnd: HWND, value: bool) {
     let changed = st(|s| {
         let c = s.shell.expanded != value;
         s.shell.expanded = value;
+        // Поиск — не вкладка: свернувшись, возвращаемся туда, откуда его открыли.
+        if !value && s.shell.tab == Tab::Commands {
+            s.shell.tab = s.input.back.unwrap_or(Tab::Music);
+        }
         if c {
             s.hover = None;
             s.ctl.confirm = None;
