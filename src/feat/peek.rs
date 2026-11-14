@@ -26,8 +26,6 @@ pub enum PeekKind {
     /// Агент ждёт разрешения. answerable — хук держит соединение, ответить можно прямо отсюда.
     Ask { id: String, answerable: bool },
     Done,
-    /// Предложение включить режим ПК (номер режима).
-    Mode(u8),
 }
 
 pub struct Peek {
@@ -73,8 +71,6 @@ pub enum PeekHit {
     More,
     /// Вопрос агента: выбран вариант.
     Pick(u8),
-    /// Предложение режима ПК: включить.
-    ModeOn,
 }
 
 impl Peek {
@@ -127,7 +123,6 @@ impl Peek {
                 }
             }
             PeekKind::Done => 78,
-            PeekKind::Mode(_) => 112,
             _ => 86,
         }
     }
@@ -251,17 +246,6 @@ pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
             }
         });
         layout(hwnd);
-        return Redraw::None;
-    }
-    if let PeekHit::ModeOn = h {
-        let m = st(|s| match s.peek.as_ref().map(|p| &p.kind) {
-            Some(PeekKind::Mode(m)) => Some(*m),
-            _ => None,
-        });
-        hide(hwnd);
-        if let Some(m) = m {
-            crate::feat::modes::set(hwnd, m);
-        }
         return Redraw::None;
     }
     let (ask, aumid, can_always, who, question) = st(|s| match &s.peek {

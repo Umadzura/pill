@@ -88,8 +88,6 @@ fn main() {
         let _ = RegisterHotKey(hwnd, HOTKEY_HIDE, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_H.0 as u32);
         shell::tray(hwnd, NIM_ADD);
         shell::appbar(hwnd, ABM_NEW);
-        // Подсказка режимов ПК: Windows сама сообщает о смене активного окна.
-        sys::wnd::watch_foreground(hwnd, ids::WM_APP_FG);
         // Батарея и яркость ноутбука — событиями, без опроса.
         sys::power::register_notify(hwnd);
         // Если exe перенесли, а автозапуск включён — обновим путь.

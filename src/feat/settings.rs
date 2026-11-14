@@ -18,23 +18,7 @@ pub struct Settings {
     pub quiet: Option<(u8, u8)>,
     /// Не показывать карточки агента, если его окно (терминал, редактор) и так активно.
     pub skip_focused: bool,
-    /// Режим ПК (`feat::modes::NAMES`): 0 — обычный.
-    pub pc_mode: u8,
-    /// Для режимов Монтаж, Рендер, Игра: программы, при которых предложить режим, и программы,
-    /// которые закрыть при включении (имена файлов через запятую).
-    pub mode_apps: [Vec<String>; 3],
-    pub mode_close: [Vec<String>; 3],
     extra: Vec<String>,
-}
-
-const MODE_KEYS: [&str; 3] = ["edit", "render", "game"];
-
-fn list(v: &str) -> Vec<String> {
-    v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
-}
-
-fn names(v: &[&str]) -> Vec<String> {
-    v.iter().map(|x| x.to_string()).collect()
 }
 
 impl Default for Settings {
@@ -45,14 +29,6 @@ impl Default for Settings {
             sound: true,
             quiet: None,
             skip_focused: true,
-            pc_mode: 0,
-            mode_apps: [
-                names(&["Adobe Premiere Pro.exe", "Resolve.exe", "CapCut.exe", "AfterFX.exe"]),
-                names(&["blender.exe", "Adobe Media Encoder.exe", "HandBrake.exe"]),
-                names(&["steam.exe"]),
-            ],
-            // Закрывать по умолчанию ничего не будем: это решает человек.
-            mode_close: [Vec::new(), Vec::new(), Vec::new()],
             extra: Vec::new(),
         }
     }
@@ -100,22 +76,7 @@ impl Settings {
                             s.skip_focused = flag(v).unwrap_or(s.skip_focused);
                             true
                         }
-                        "pc_mode" => {
-                            s.pc_mode = v.parse::<u8>().map(|m| m.min(3)).unwrap_or(0);
-                            true
-                        }
-                        k => match (k.strip_prefix("mode_").and_then(|r| r.rsplit_once('_')), ()) {
-                            (Some((m, kind)), ()) if MODE_KEYS.contains(&m) && (kind == "apps" || kind == "close") => {
-                                let i = MODE_KEYS.iter().position(|x| *x == m).unwrap_or(0);
-                                if kind == "apps" {
-                                    s.mode_apps[i] = list(v);
-                                } else {
-                                    s.mode_close[i] = list(v);
-                                }
-                                true
-                            }
-                            _ => false,
-                        },
+                        _ => false,
                     }
                 }
                 None => false,
@@ -133,10 +94,7 @@ impl Settings {
             Some((a, b)) => out.push_str(&format!("quiet={}-{}\n", a, b)),
             None => out.push_str("quiet=off\n"),
         }
-        out.push_str(&format!("skip_focused={}\npc_mode={}\n", self.skip_focused as u8, self.pc_mode));
-        for (i, m) in MODE_KEYS.iter().enumerate() {
-            out.push_str(&format!("mode_{}_apps={}\nmode_{}_close={}\n", m, self.mode_apps[i].join(", "), m, self.mode_close[i].join(", ")));
-        }
+        out.push_str(&format!("skip_focused={}\n", self.skip_focused as u8));
         for l in &self.extra {
             out.push_str(l);
             out.push('\n');
@@ -201,11 +159,10 @@ mod tests {
     }
 
     #[test]
-    fn quiet_modes_lists() {
-        let s = Settings::parse("quiet=23-8\npc_mode=2\nmode_render_close=Telegram.exe, chrome.exe\n");
+    fn quiet_hours() {
+        let s = Settings::parse("quiet=23-8\nskip_focused=0\n");
         assert!(s.quiet_now(23) && s.quiet_now(3) && !s.quiet_now(8) && !s.quiet_now(15));
-        assert_eq!(s.pc_mode, 2);
-        assert_eq!(s.mode_close[1], vec!["Telegram.exe".to_string(), "chrome.exe".into()]);
+        assert!(!s.skip_focused);
         assert_eq!(Settings::parse(&s.serialize()), s);
         let day = Settings::parse("quiet=9-18\n");
         assert!(day.quiet_now(9) && !day.quiet_now(18));

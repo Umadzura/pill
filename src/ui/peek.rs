@@ -185,16 +185,6 @@ unsafe fn question(p: &mut Painter, s: &State, pk: &Peek, q: &crate::feat::agent
     link(p, right, p.s(y + 2), "ответить своими словами в терминале · Alt T", PeekHit::Dismiss);
 }
 
-/// Предложение режима ПК: «Включить «Монтаж»?», что это даст, кнопки.
-unsafe fn mode_offer(p: &mut Painter, pk: &Peek) {
-    let (left, right) = (p.s(20), p.s(W - 20));
-    p.text(p.f.small, &format!("Открыт {}", pk.app), RECT { left, top: p.s(12), right, bottom: p.s(30) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
-    p.text(p.f.hero, &pk.title, RECT { left, top: p.s(30), right, bottom: p.s(60) }, FG, DT_LEFT | DT_END_ELLIPSIS);
-    p.text(p.f.small, &pk.body, RECT { left, top: p.s(58), right, bottom: p.s(74) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
-    let bx = button(p, left, p.s(78), "Включить", "", PeekHit::ModeOn, true) + p.s(8);
-    button(p, bx, p.s(78), "Нет", "", PeekHit::Dismiss, false);
-}
-
 /// «Агент готов»: его маскот с улыбкой, крупно «notes готов», под ним сколько работал.
 /// Просьба без ответа (напоминание из уведомления Claude Code): значок, заголовок, текст.
 unsafe fn agent(p: &mut Painter, s: &State, pk: &Peek) {
@@ -227,10 +217,6 @@ pub unsafe fn draw(p: &mut Painter, s: &State) {
             Some(q) => question(p, s, pk, q),
             None => ask(p, s, pk),
         }
-        return;
-    }
-    if let PeekKind::Mode(_) = pk.kind {
-        mode_offer(p, pk);
         return;
     }
     p.hit(RECT { left: 0, top: 0, right: p.s(pk.width()), bottom: h }, Hit::Peek(PeekHit::Dismiss));

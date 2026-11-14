@@ -135,22 +135,6 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     p.reach(y + PW);
     y += PW + 8;
 
-    // Режим ПК: подпись и четыре слова, активное белое.
-    let row = p.r(22, y, EXPANDED_W - 20, y + 26);
-    p.text(p.f.small, "Режим ПК", row, DIM, DT_LEFT);
-    let mut rx = row.right;
-    for (i, name) in crate::feat::modes::NAMES.iter().enumerate().rev() {
-        let w = p.measure(p.f.normal, name);
-        let r = RECT { left: rx - w, right: rx, ..row };
-        let hit = Hit::PcMode(i as u8);
-        let on = s.settings.pc_mode == i as u8;
-        p.text(p.f.normal, name, r, if on { FG } else if p.hovered(hit) { DIM } else { FAINT }, DT_LEFT);
-        p.hit(RECT { left: r.left - p.s(4), right: r.right + p.s(4), ..r }, hit);
-        rx = r.left - p.s(16);
-    }
-    p.reach(y + 26);
-    y += 34;
-
     // Кто держит микрофон и камеру.
     let u = watch::IN_USE.lock().unwrap().clone();
     let mut parts = Vec::new();
