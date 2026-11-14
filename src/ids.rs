@@ -31,8 +31,6 @@ pub const WM_APP_API: u32 = WM_APP + 11;
 pub const WM_APP_NOTIF: u32 = WM_APP + 12;
 /// Отрисовка узнала, что содержимому вкладки нужна другая высота панели: переложить окно.
 pub const WM_APP_LAYOUT: u32 = WM_APP + 13;
-/// Сменилось активное окно (SetWinEventHook): wparam — его HWND. Нужно подсказке режимов ПК.
-pub const WM_APP_FG: u32 = WM_APP + 14;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;

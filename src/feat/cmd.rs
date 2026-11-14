@@ -34,8 +34,6 @@ pub enum CmdRes {
     Active(usize),
     /// Запись буфера (индекс в `clip.items`): вставить.
     Clip(usize),
-    /// Включить режим ПК.
-    PcMode(u8),
 }
 
 /// Что показать в списке поиска для текущего запроса и режима. Порядок = порядок на экране.
@@ -70,18 +68,6 @@ pub fn results(s: &State) -> Vec<CmdRes> {
     if mode != MODE_ACT && !q.starts_with('>') {
         let limit = if mode == MODE_APPS { 8 } else { 3 };
         out.extend(search(&s.cmd.apps, q, limit).into_iter().map(CmdRes::App));
-    }
-    if acts {
-        // «режим», «монтаж», «игра» и т. п.: включить режим ПК.
-        let low = q.to_lowercase();
-        let word = low.trim_start_matches("режим").trim();
-        if word.chars().count() >= 3 || low.starts_with("режим") {
-            for (i, name) in crate::feat::modes::NAMES.iter().enumerate() {
-                if word.is_empty() || name.to_lowercase().starts_with(word) {
-                    out.push(CmdRes::PcMode(i as u8));
-                }
-            }
-        }
     }
     if mode == MODE_ALL && !q.starts_with('>') {
         out.extend(s.clip.view(q).into_iter().take(2).map(CmdRes::Clip));
@@ -163,10 +149,6 @@ unsafe fn run(hwnd: HWND, res: CmdRes) {
             close_panel(hwnd, true);
         }
         CmdRes::App(i) => run_app(hwnd, i),
-        CmdRes::PcMode(m) => {
-            close_panel(hwnd, true);
-            crate::feat::modes::set(hwnd, m);
-        }
         CmdRes::Clip(i) => {
             // Запись могла пропасть между отрисовкой и нажатием: тогда молча выходим.
             let text = st(|s| s.clip.items.get(i).map(|e| e.text.clone()));

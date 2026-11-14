@@ -1,12 +1,9 @@
-//! Чужие окна: имя программы окна, вежливое закрытие программ по списку, поиск окна по заголовку,
-//! событие «сменилось активное окно» (без опроса). Про `State` ничего не знает.
-
-use std::sync::atomic::{AtomicIsize, Ordering};
+//! Чужие окна: имя программы окна, заголовок активного окна, поиск окна по заголовку.
+//! Про `State` ничего не знает.
 
 use windows::core::PWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Threading::{GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
-use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// Имя файла программы, которой принадлежит окно: «Telegram.exe».
@@ -85,25 +82,6 @@ fn top_windows() -> Vec<HWND> {
     v
 }
 
-/// Вежливо закрыть программы по именам файлов: окнам шлётся WM_CLOSE, как от крестика.
-/// Программа с несохранённым спросит «сохранить?» и останется. Возвращает, скольким окнам послали.
-pub fn close_by_names(names: &[String]) -> usize {
-    if names.is_empty() {
-        return 0;
-    }
-    let mut n = 0;
-    for h in top_windows() {
-        let Some(p) = process_name(h) else { continue };
-        if names.iter().any(|x| x.eq_ignore_ascii_case(&p)) {
-            unsafe {
-                let _ = PostMessageW(h, WM_CLOSE, WPARAM(0), LPARAM(0));
-            }
-            n += 1;
-        }
-    }
-    n
-}
-
 /// Поднять окно, в заголовке которого есть имя (папка проекта агента): терминал или редактор.
 /// Окна терминалов и редакторов в приоритете. false — подходящего окна нет.
 pub fn focus_titled(name: &str) -> bool {
@@ -133,27 +111,6 @@ pub fn focus_titled(name: &str) -> bool {
         crate::sys::launch::force_foreground(h);
     }
     true
-}
-
-static TARGET: AtomicIsize = AtomicIsize::new(0);
-static MSG: AtomicIsize = AtomicIsize::new(0);
-
-unsafe extern "system" fn on_event(_: HWINEVENTHOOK, _: u32, fg: HWND, _: i32, _: i32, _: u32, _: u32) {
-    let to = TARGET.load(Ordering::Relaxed);
-    if to != 0 {
-        // Внутри колбэка только сообщение окну: логика — в обработчике (правило st()).
-        let _ = PostMessageW(HWND(to as *mut _), MSG.load(Ordering::Relaxed) as u32, WPARAM(fg.0 as usize), LPARAM(0));
-    }
-}
-
-/// Подписаться на смену активного окна: Windows сама шлёт событие, опроса нет. Сообщение `msg`
-/// приходит окну `hwnd` с HWND нового активного окна в wparam.
-pub fn watch_foreground(hwnd: HWND, msg: u32) {
-    TARGET.store(hwnd.0 as isize, Ordering::Relaxed);
-    MSG.store(msg as isize, Ordering::Relaxed);
-    unsafe {
-        let _ = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, Some(on_event), 0, 0, WINEVENT_OUTOFCONTEXT);
-    }
 }
 
 #[cfg(test)]

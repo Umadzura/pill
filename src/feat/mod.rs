@@ -7,7 +7,6 @@ pub mod api;
 pub mod clip;
 pub mod cmd;
 pub mod ctl;
-pub mod modes;
 pub mod music;
 pub mod notifs;
 pub mod osd;
