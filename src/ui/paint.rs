@@ -152,6 +152,8 @@ pub struct Painter<'a> {
     pub f: &'a Fonts,
     pub hits: Vec<(RECT, Hit)>,
     pub hover: Option<Hit>,
+    /// Нижний край содержимого вкладки в пикселях окна (по нему считается высота панели).
+    pub bottom: i32,
     /// Где нарисованы полоски визуализатора в этом кадре.
     pub viz: Option<super::viz::VizArea>,
 }
@@ -225,6 +227,10 @@ impl Painter<'_> {
         let mut sz = SIZE::default();
         let _ = GetTextExtentPoint32W(self.hdc, &wide(s), &mut sz);
         sz.cx
+    }
+    /// Содержимое доходит до y (логические px, от верха панели, с учётом сдвига `oy`).
+    pub fn reach(&mut self, y: i32) {
+        self.bottom = self.bottom.max(self.s(y) + self.oy);
     }
     pub fn hit(&mut self, r: RECT, h: Hit) {
         self.hits.push((self.off(r), h));

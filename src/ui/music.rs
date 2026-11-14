@@ -27,6 +27,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
         p.text(p.f.normal, "Сейчас ничего не играет", RECT { top: r.top + p.s(110), bottom: r.top + p.s(140), ..r }, DIM, DT_CENTER);
         drop(m);
         p.volume_row(24, 230, EXPANDED_W - 24, s.ctl.snap.volume);
+        p.reach(256);
         return;
     }
     let art = p.r(24, 58, 172, 206);
@@ -88,4 +89,5 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     }
 
     p.volume_row(24, 300, EXPANDED_W - 24, s.ctl.snap.volume);
+    p.reach(326);
 }

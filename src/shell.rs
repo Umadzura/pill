@@ -75,6 +75,8 @@ pub struct Shell {
     fullscreen: bool,
     /// Сколько секунд подряд проверка не видит полноэкранного окна.
     fs_miss: u8,
+    /// Высота раскрытой панели (логические px) по содержимому открытой вкладки; считает отрисовка.
+    pub panel_h: i32,
     /// Пилюлю спрятали сочетанием клавиш (Ctrl+Alt+H), чтобы достать то, что под ней.
     pub hidden: bool,
 }
@@ -97,6 +99,7 @@ impl Shell {
             fullscreen: false,
             fs_miss: 0,
             hidden: false,
+            panel_h: EXPANDED_H,
         }
     }
     /// Пилюлю сейчас видно (в полноэкранном режиме прячемся, если панель не открыта хоткеем).
@@ -124,10 +127,11 @@ unsafe fn place(hwnd: HWND, w: i32, h: i32) {
 /// Считает размер окна по содержимому и ставит его по центру верхнего края основного монитора.
 /// Форму (ушки, скруглённый низ) даёт отрисовка. Раскрытие и сворачивание идут плавно (TIMER_ANIM).
 pub unsafe fn layout(hwnd: HWND) {
-    let (now_mode, peek_h, dpi, text, level, lead) =
-        st(|s| (mode(s), s.peek.as_ref().map(|p| (p.width(), p.height())), s.shell.dpi, pill::text(s), pill::shows_level(s), pill::lead_width(s)));
+    let (now_mode, peek_h, dpi, text, level, lead, panel_h) = st(|s| {
+        (mode(s), s.peek.as_ref().map(|p| (p.width(), p.height())), s.shell.dpi, pill::text(s), pill::shows_level(s), pill::lead_width(s), s.shell.panel_h)
+    });
     let (w, h) = if now_mode == MODE_EXPANDED {
-        (scale(EXPANDED_W, dpi), scale(EXPANDED_H, dpi))
+        (scale(EXPANDED_W, dpi), scale(panel_h, dpi))
     } else if let Some((pw, ph)) = peek_h {
         (scale(pw, dpi), scale(ph, dpi))
     } else if level {
@@ -160,6 +164,12 @@ pub unsafe fn layout(hwnd: HWND) {
         SetTimer(hwnd, TIMER_ANIM, 15, None);
     } else if st(|s| s.shell.anim.as_mut().map(|a| a.to = (w, h)).is_some()) {
         // Анимация уже идёт: поменялась только цель.
+    } else if changed && visible && now_mode == MODE_EXPANDED {
+        // Другая вкладка — другая высота: панель подтягивается плавно, а не прыгает.
+        let mut rc = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rc);
+        st(|s| s.shell.anim = Some(Anim { view: MODE_EXPANDED, from: (rc.right, rc.bottom), to: (w, h), start: std::time::Instant::now() }));
+        SetTimer(hwnd, TIMER_ANIM, 15, None);
     } else if changed {
         place(hwnd, w, h);
     }

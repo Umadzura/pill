@@ -536,6 +536,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         WM_APP_VIZ => ui::viz::on_frame(hwnd),
         WM_APP_API => api::on_events(hwnd),
         WM_APP_NOTIF => on_notifs(hwnd),
+        WM_APP_LAYOUT => shell::layout(hwnd),
         WM_APP_SYS => {
             let warn = sysmon::LOAD_WARN.lock().unwrap().take();
             if let Some(text) = warn {

@@ -15,7 +15,9 @@ pub mod viz;
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, PostMessageW};
+
+use crate::ids::WM_APP_LAYOUT;
 
 use crate::app::{scale, st, Hit, State, Tab, TABS};
 use crate::shell::{self, BOTTOM_R_COLLAPSED, BOTTOM_R_EXPANDED, EAR, EXPANDED_H, EXPANDED_W, MODE_COLLAPSED, MODE_PEEK};
@@ -35,6 +37,10 @@ pub unsafe fn measure(hwnd: HWND, dpi: u32, text: &str) -> i32 {
     sz.cx
 }
 
+
+/// Отступ под последним элементом вкладки и самая низкая панель (логические px).
+const PAD_BOTTOM: i32 = 20;
+const MIN_H: i32 = 200;
 
 /// Высота переключателя подвкладок (логические px): на столько сдвигается содержимое под ним.
 const SUB_H: i32 = 30;
@@ -77,9 +83,9 @@ pub unsafe fn render(hwnd: HWND) {
         SetBkMode(mem, TRANSPARENT);
         let old_font = GetCurrentObject(mem, OBJ_FONT);
 
-        let (radius, ear) = st(|s| {
+        let (radius, ear, relayout) = st(|s| {
             let fonts = Fonts::new(s.shell.dpi);
-            let mut p = Painter { hdc: mem, cv, oy: 0, ox: 0, dpi: s.shell.dpi, f: &fonts, hits: Vec::new(), hover: s.hover, viz: None };
+            let mut p = Painter { hdc: mem, cv, oy: 0, ox: 0, dpi: s.shell.dpi, f: &fonts, hits: Vec::new(), hover: s.hover, bottom: 0, viz: None };
             let ear = p.s(EAR);
             // Пока окно меняет размер, показываем больший из двух видов, обрезанный его размером.
             let view = s.shell.anim_view().unwrap_or(shell::mode(s));
@@ -144,6 +150,7 @@ pub unsafe fn render(hwnd: HWND) {
                     let sub = RECT { top: body.top + p.s(150), bottom: body.top + p.s(190), ..body };
                     p.text(fonts.normal, "Клик, чтобы закрыть", sub, DIM, DT_CENTER);
                     p.hit(body, Hit::Alarm);
+                    p.reach(220);
                 } else {
                     match s.shell.tab {
                         Tab::Music => music::draw(&mut p, s, w, h),
@@ -164,12 +171,21 @@ pub unsafe fn render(hwnd: HWND) {
                     }
                 }
             }
+            // Высота панели по содержимому вкладки: поменялась — окно переложится плавно (WM_APP_LAYOUT).
+            let mut relayout = false;
+            if view == shell::MODE_EXPANDED && p.bottom > 0 {
+                let want = (p.bottom * 96 / s.shell.dpi as i32 + PAD_BOTTOM).clamp(MIN_H, EXPANDED_H);
+                relayout = std::mem::replace(&mut s.shell.panel_h, want) != want;
+            }
             s.hits = std::mem::take(&mut p.hits);
             s.viz_area = p.viz;
             SelectObject(mem, old_font);
             drop(fonts);
-            (scale(if expanded { BOTTOM_R_EXPANDED } else { BOTTOM_R_COLLAPSED }, s.shell.dpi), ear)
+            (scale(if expanded { BOTTOM_R_EXPANDED } else { BOTTOM_R_COLLAPSED }, s.shell.dpi), ear, relayout)
         });
+        if relayout {
+            let _ = PostMessageW(hwnd, WM_APP_LAYOUT, WPARAM(0), LPARAM(0));
+        }
 
         let _ = GdiFlush();
         cv.finish(radius, ear);

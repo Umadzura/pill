@@ -58,6 +58,7 @@ pub unsafe fn draw(p: &mut Painter, _s: &State, w: i32) {
     let snap: Option<Snapshot> = SNAPSHOT.lock().unwrap().clone();
     let Some(sn) = snap else {
         p.text(p.f.normal, "Собираю данные…", RECT { left: 0, top: p.s(120), right: w, bottom: p.s(160) }, DIM, DT_CENTER);
+        p.reach(160);
         return;
     };
 
@@ -88,6 +89,8 @@ pub unsafe fn draw(p: &mut Painter, _s: &State, w: i32) {
     }
     let dy = TOP + 2 * (CARD_H + 8);
     let dr = p.r(20, dy, 20 + 2 * CARD_W + 8, dy + 26);
+    p.reach(dy + 26);
+    p.reach(TOP + 22 + sn.apps.len().max(1) as i32 * 30);
     p.fill(dr, R_ROW, PANEL);
     p.text(p.f.small, &disk, RECT { left: dr.left + p.s(12), right: dr.right - p.s(10), ..dr }, DIM, DT_LEFT | DT_END_ELLIPSIS);
 

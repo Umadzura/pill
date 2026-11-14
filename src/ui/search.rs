@@ -266,6 +266,7 @@ unsafe fn clip_mode(p: &mut Painter, s: &State, w: i32, h: i32, res: &[CmdRes]) 
 }
 
 pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
+    p.reach(crate::shell::EXPANDED_H);
     let placeholder = match s.input.mode {
         MODE_CLIP => "Поиск в истории буфера",
         MODE_APPS => "Название программы",
