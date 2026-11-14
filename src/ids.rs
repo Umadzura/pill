@@ -60,6 +60,12 @@ pub const COLLAPSE_DELAY_MS: u32 = 350;
 pub const HOTKEY_CMD: i32 = 1;
 /// Ctrl+Alt+V.
 pub const HOTKEY_CLIP: i32 = 2;
+/// Ответ на просьбу агента: Alt+Y разрешить, Alt+A всегда, Alt+N отклонить, Alt+T в терминал.
+/// Регистрируются только пока просьба на экране (`feat::peek`).
+pub const HOTKEY_ALLOW: i32 = 3;
+pub const HOTKEY_ALWAYS: i32 = 4;
+pub const HOTKEY_DENY: i32 = 5;
+pub const HOTKEY_TERM: i32 = 6;
 
 pub const MENU_AUTOSTART: usize = 10;
 pub const MENU_EXIT: usize = 11;

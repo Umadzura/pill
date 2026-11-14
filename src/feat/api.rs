@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Diagnostics::Debug::MessageBeep;
+use windows::Win32::UI::WindowsAndMessaging::{MB_ICONASTERISK, MB_ICONQUESTION, MESSAGEBOX_STYLE};
 
 use crate::app::st;
 use crate::feat::agents::{self, AgentState};
@@ -290,6 +292,13 @@ impl Tasks {
 /// Очередь событий от потока API (он кладёт, UI забирает по WM_APP_API).
 pub static QUEUE: std::sync::Mutex<Vec<Event>> = std::sync::Mutex::new(Vec::new());
 
+/// Системный звук события, если звуки включены в настройках. У просьбы и у «закончил» звуки разные.
+unsafe fn sound(kind: MESSAGEBOX_STYLE) {
+    if st(|s| s.settings.sound) {
+        let _ = MessageBeep(kind);
+    }
+}
+
 /// WM_APP_API: применить всё, что пришло.
 pub unsafe fn on_events(hwnd: HWND) {
     let events = std::mem::take(&mut *QUEUE.lock().unwrap());
@@ -349,13 +358,29 @@ pub unsafe fn on_events(hwnd: HWND) {
                 match notice {
                     Some(agents::Notice::Ask { name, text, answerable }) => {
                         let kind = PeekKind::Ask { id, answerable };
-                        let pk = Peek::new(kind, "Claude Code".into(), format!("{}: нужно разрешение", name), text);
+                        let mut pk = Peek::new(kind, "Claude Code".into(), format!("{}: нужно разрешение", name), text);
+                        if answerable {
+                            // Карточка с ответом: имя проекта, запрос человека, инструмент, строки кода, ветка.
+                            let got = st(|s| s.agents.list.iter().find(|a| a.name == name).map(|a| (a.note.clone(), a.tool.clone(), a.branch.clone().unwrap_or_default(), a.ask_lines.clone(), a.ask_stat, a.ask_always)));
+                            if let Some((note, tool, branch, lines, stat, always)) = got {
+                                pk.can_always = always;
+                                pk.app = name.clone();
+                                pk.title = name.clone();
+                                pk.body = note;
+                                pk.tool = tool;
+                                pk.branch = branch;
+                                pk.lines = lines;
+                                pk.stat = stat;
+                            }
+                        }
                         // С кнопками ждём ответа, без кнопок это просто напоминание.
                         peek::show(hwnd, pk, if answerable { None } else { Some(8000) });
+                        sound(MB_ICONQUESTION);
                     }
                     Some(agents::Notice::Done { name, text }) => {
                         let pk = Peek::new(PeekKind::Done, "Claude Code".into(), format!("{}: закончил", name), text);
                         peek::show(hwnd, pk, Some(4000));
+                        sound(MB_ICONASTERISK);
                     }
                     Some(agents::Notice::Resolved) => {
                         crate::bg::api::answer(&id, None);
