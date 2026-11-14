@@ -80,6 +80,13 @@ pub fn refresh() {
     winrt::send(Job::Brightness);
 }
 
+/// После смены громкости перечитываем только её: имя устройства и микрофон от неё не зависят,
+/// а колесо зовёт это на каждый щелчок.
+fn refresh_volume() {
+    let v = sys::audio::volume();
+    st(|s| s.ctl.snap.volume = v);
+}
+
 /// Поставить яркость: сразу показываем новое значение, а медленный DDC/WMI делает воркер.
 fn set_brightness(pct: i32) -> Redraw {
     let pct = pct.clamp(0, 100) as u8;
@@ -104,7 +111,7 @@ pub fn brightness_wheel(notches: i32) -> Redraw {
 pub fn volume_at(rect: RECT, x: i32) -> Redraw {
     let w = (rect.right - rect.left).max(1);
     sys::audio::set_volume((x - rect.left) as f32 / w as f32);
-    refresh();
+    refresh_volume();
     Redraw::Content
 }
 
@@ -113,7 +120,7 @@ pub fn volume_wheel(notches: i32) -> Redraw {
     if let Some((v, _)) = sys::audio::volume() {
         sys::audio::set_volume(v + notches as f32 * 0.02);
     }
-    refresh();
+    refresh_volume();
     Redraw::Content
 }
 
