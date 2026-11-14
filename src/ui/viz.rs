@@ -4,7 +4,7 @@
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::GdiFlush;
 
-use super::paint::{ACCENT, BG};
+use super::paint::{rgb, BG};
 use super::surface::{self, Canvas};
 use crate::app::{scale, st};
 use crate::feat::viz::{self, PENDING, SPECTRUM};
@@ -21,15 +21,17 @@ pub unsafe fn draw(cv: Canvas, dpi: u32, r: RECT, n: usize) {
     let levels = viz::group(&SPECTRUM.lock().unwrap(), n);
     let w = r.right - r.left;
     let h = r.bottom - r.top;
-    let gap = scale(2, dpi).max(1);
+    // В панели полосок много и зазор шире, в свёрнутой пилюле их четыре и зазор уже.
+    let gap = scale(if n > 8 { 3 } else { 2 }, dpi).max(1);
     let bw = ((w - gap * (n as i32 - 1)) / n as i32).max(1);
-    let min_h = bw.max(scale(2, dpi)).min(h);
+    let min_h = scale(2, dpi).min(h);
+    // Белый с лёгким приглушением, как текст: акцентный синий оставлен переключателям.
+    let color = rgb(212, 212, 216);
     for (i, lv) in levels.iter().enumerate() {
         let bh = (min_h + ((h - min_h) as f32 * lv) as i32).min(h);
         let left = r.left + i as i32 * (bw + gap);
-        // Полоски растут от центра: так смотрятся живее и ровнее в низкой пилюле.
-        let top = r.top + (h - bh) / 2;
-        cv.fill_round(RECT { left, top, right: left + bw, bottom: top + bh }, bw, ACCENT);
+        // Полоски растут от нижнего края.
+        cv.fill_round(RECT { left, top: r.bottom - bh, right: left + bw, bottom: r.bottom }, scale(4, dpi).min(bw), color);
     }
 }
 
