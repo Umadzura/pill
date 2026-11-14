@@ -76,6 +76,8 @@ pub fn wide(s: &str) -> Vec<u16> {
 }
 
 pub struct Fonts {
+    /// Крупный заголовок: название трека, имя агента.
+    pub hero: HFONT,
     pub bold: HFONT,
     pub title: HFONT,
     pub normal: HFONT,
@@ -101,6 +103,7 @@ pub fn face() -> PCWSTR {
 impl Fonts {
     pub unsafe fn new(dpi: u32) -> Self {
         Fonts {
+            hero: font(dpi, 22, true, face()),
             bold: font(dpi, 14, true, face()),
             title: font(dpi, 17, true, face()),
             normal: font(dpi, 13, false, face()),
@@ -114,7 +117,7 @@ impl Fonts {
 impl Drop for Fonts {
     fn drop(&mut self) {
         unsafe {
-            for f in [self.bold, self.title, self.normal, self.small, self.icon, self.icon_big] {
+            for f in [self.hero, self.bold, self.title, self.normal, self.small, self.icon, self.icon_big] {
                 let _ = DeleteObject(f);
             }
         }
@@ -239,11 +242,12 @@ impl Painter<'_> {
         self.hover == Some(h)
     }
     /// Полоски визуализатора: рисуем и запоминаем место для покадровой перерисовки.
-    pub unsafe fn viz(&mut self, r: RECT, bars: usize) {
+    /// `colors` — цвет полосок слева и справа (из обложки), между ними плавный переход.
+    pub unsafe fn viz(&mut self, r: RECT, bars: usize, colors: (COLORREF, COLORREF)) {
         let r = self.off(r);
         let _ = GdiFlush();
-        super::viz::draw(self.cv, self.dpi, r, bars);
-        self.viz = Some(super::viz::VizArea { rect: r, bars });
+        super::viz::draw(self.cv, self.dpi, r, bars, colors);
+        self.viz = Some(super::viz::VizArea { rect: r, bars, colors });
     }
     /// Круглая кнопка-значок.
     pub unsafe fn icon_button(&mut self, r: RECT, icon: &str, h: Hit, big: bool) {

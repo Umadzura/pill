@@ -57,7 +57,8 @@ pub unsafe fn draw(p: &mut Painter, s: &State, rc: RECT) {
         if v.viz {
             // Настоящий спектр того, что играет (feat::viz), 4 столбика.
             let vx = rx + p.s(10);
-            p.viz(RECT { left: vx, top: mid - p.s(7), right: vx + p.s(EQ_W), bottom: mid + p.s(7) }, 4);
+            let colors = pill::mini_art().map(|a| super::viz::tint(&a)).unwrap_or((super::viz::PLAIN, super::viz::PLAIN));
+            p.viz(RECT { left: vx, top: mid - p.s(7), right: vx + p.s(EQ_W), bottom: mid + p.s(7) }, 4, colors);
         }
     }
     if v.plain {
