@@ -150,6 +150,10 @@ pub unsafe fn show(hwnd: HWND, peek: Peek, ms: Option<u32>) {
         SetTimer(hwnd, TIMER_PEEK, ms, None);
     }
     hotkeys(hwnd, ask);
+    if ask {
+        // Просьба важнее: спрятанная пилюля возвращается.
+        st(|s| s.shell.hidden = false);
+    }
     layout(hwnd);
 }
 

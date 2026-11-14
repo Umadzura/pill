@@ -103,6 +103,8 @@ pub struct State {
     pub notif_flip: bool,
     /// Карточка из чёлки (уведомление, просьба агента), если показана.
     pub peek: Option<Peek>,
+    /// Ползунок, который сейчас тащат мышью (громкость или яркость), и его полоска.
+    pub drag: Option<(Hit, RECT)>,
     /// Просьбы агентов, ждущие своей очереди на показ (на экране одна).
     pub asks: Vec<Peek>,
     /// До какого момента не показывать карточки уведомлений (кнопка «Тишина на час»).
@@ -141,6 +143,7 @@ pub unsafe fn init_state() {
         sys_sampling: false,
         notif_flip: false,
         peek: None,
+        drag: None,
         asks: Vec::new(),
         quiet_until: None,
         feed_notifs: false,
@@ -174,6 +177,11 @@ fn hit_at(s: &State, x: i32, y: i32) -> Option<(RECT, Hit)> {
 
 unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
     let Some((rect, hit)) = st(|s| hit_at(s, x, y)) else { return };
+    if matches!(hit, Hit::Volume | Hit::Brightness) {
+        // Ползунок можно тащить: пока кнопка зажата, мышь наша, даже если курсор ушёл за окно.
+        st(|s| s.drag = Some((hit, rect)));
+        SetCapture(hwnd);
+    }
     let r = match hit {
         Hit::Tab(t) => on_tab(hwnd, t),
         Hit::Input => {
@@ -373,8 +381,24 @@ unsafe fn on_tick(hwnd: HWND) {
     }
 }
 
+/// Кнопку отпустили: перетаскивание ползунка кончилось.
+unsafe fn on_mouse_up(hwnd: HWND) {
+    if st(|s| s.drag.take().is_some()) {
+        let _ = ReleaseCapture();
+        // Курсор мог остаться за окном: тогда события «ушёл» не будет, сворачиваемся сами.
+        shell::schedule_collapse(hwnd);
+    }
+}
+
 unsafe fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
     let _ = KillTimer(hwnd, TIMER_COLLAPSE);
+    if let Some((hit, rect)) = st(|s| s.drag) {
+        // Тащим ползунок: значение по положению курсора, за края полоски не выходит.
+        let x = loword(lparam);
+        let r = if hit == Hit::Volume { ctl::volume_at(rect, x) } else { ctl::brightness_at(rect, x) };
+        redraw(hwnd, r);
+        return;
+    }
     if st(|s| !std::mem::replace(&mut s.shell.tracking, true)) {
         let mut tme = TRACKMOUSEEVENT {
             cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -462,6 +486,9 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         WM_MOUSEMOVE => on_mouse_move(hwnd, lparam),
         WM_MOUSELEAVE => on_mouse_leave(hwnd),
         WM_LBUTTONDOWN => on_click(hwnd, loword(lparam), hiword(lparam)),
+        WM_LBUTTONUP => on_mouse_up(hwnd),
+        // Захват мыши отобрали (Alt+Tab во время перетаскивания): ползунок отпущен.
+        WM_CAPTURECHANGED => st(|s| s.drag = None),
         WM_MOUSEWHEEL => on_wheel(hwnd, ((wparam.0 >> 16) & 0xFFFF) as i16 as i32),
         WM_CHAR => {
             if st(|s| s.input.active) {
@@ -483,6 +510,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         WM_HOTKEY => {
             match wparam.0 as i32 {
                 id @ (HOTKEY_ALLOW | HOTKEY_ALWAYS | HOTKEY_DENY | HOTKEY_TERM) => peek::on_hotkey(hwnd, id),
+                HOTKEY_HIDE => shell::toggle_hidden(hwnd),
                 HOTKEY_CLIP => input::on_hotkey(hwnd, cmd::MODE_CLIP),
                 _ => input::on_hotkey(hwnd, cmd::MODE_ALL),
             }

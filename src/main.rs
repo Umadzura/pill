@@ -85,6 +85,7 @@ fn main() {
             let _ = RegisterHotKey(hwnd, HOTKEY_CMD, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SPACE.0 as u32);
         }
         let _ = RegisterHotKey(hwnd, HOTKEY_CLIP, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_V.0 as u32);
+        let _ = RegisterHotKey(hwnd, HOTKEY_HIDE, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_H.0 as u32);
         shell::tray(hwnd, NIM_ADD);
         shell::appbar(hwnd, ABM_NEW);
         // Батарея и яркость ноутбука — событиями, без опроса.
