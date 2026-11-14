@@ -26,7 +26,7 @@ use crate::{input, pill, shell, sys, ui};
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Tab {
     Music,
-    Clipboard,
+    /// Строка поиска (программы, буфер, действия). В шапке её нет: открывается хоткеем или лупой.
     Commands,
     Controls,
     System,
@@ -35,10 +35,8 @@ pub enum Tab {
 
 /// Вкладки в шапке. «Система» — группа из двух страниц (`Tab::Controls` «Управление» и
 /// `Tab::System` «Монитор»), между ними переключатель под шапкой.
-pub const TABS: [(Tab, &str); 5] = [
+pub const TABS: [(Tab, &str); 3] = [
     (Tab::Music, "Музыка"),
-    (Tab::Clipboard, "Буфер"),
-    (Tab::Commands, "Команды"),
     (Tab::Controls, "Система"),
     (Tab::Feed, "События"),
 ];
@@ -54,8 +52,12 @@ pub enum Hit {
     Brightness,
     Music(MusicHit),
     Clip(ClipHit),
-    /// Строка результата командной строки.
+    /// Строка результата в поиске (номер в `cmd::results`).
     Cmd(usize),
+    /// Режим строки поиска (`cmd::MODE_*`); лупа в шапке — режим «Всё».
+    Mode(u8),
+    /// Плитка часто запускаемой программы (индекс в `cmd.apps`).
+    AppTile(usize),
     Ctl(CtlHit),
     /// Переключатель в «Событиях»: false — агенты, true — уведомления.
     FeedPage(bool),
@@ -125,7 +127,7 @@ pub unsafe fn init_state() {
         hover: None,
         viz_area: None,
         clip: clip::History::load(),
-        cmd: cmd::CmdState::default(),
+        cmd: cmd::CmdState { apps: Vec::new(), freq: cmd::load_freq() },
         ctl: ctl::CtlState::default(),
         timers: timers::Timers::default(),
         osd: osd::Osd::new(),
@@ -169,8 +171,16 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
     let r = match hit {
         Hit::Tab(t) => on_tab(hwnd, t),
         Hit::Input => {
-            let tab = st(|s| s.shell.tab);
-            input::activate(hwnd, tab);
+            let mode = st(|s| s.input.mode);
+            input::activate(hwnd, mode);
+            Redraw::None
+        }
+        Hit::Mode(m) => {
+            input::switch_mode(hwnd, m);
+            Redraw::None
+        }
+        Hit::AppTile(i) => {
+            cmd::run_app(hwnd, i);
             Redraw::None
         }
         Hit::Volume => ctl::volume_at(rect, x),
@@ -210,8 +220,9 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
 
 unsafe fn on_tab(hwnd: HWND, t: Tab) -> Redraw {
     let active = st(|s| s.input.active);
-    if active && matches!(t, Tab::Clipboard | Tab::Commands) {
-        input::activate(hwnd, t);
+    if active && t == Tab::Commands {
+        let mode = st(|s| s.input.mode);
+        input::activate(hwnd, mode);
         return Redraw::None;
     }
     if active {
@@ -244,8 +255,8 @@ unsafe fn on_wheel(hwnd: HWND, delta: i32) {
     let r = match tab {
         Tab::Controls if hover == Some(Hit::Brightness) => ctl::brightness_wheel(notches),
         Tab::Music | Tab::Controls => ctl::volume_wheel(notches),
-        Tab::Clipboard => {
-            st(|s| input::scroll_clip(s, notches));
+        Tab::Commands => {
+            st(|s| input::scroll_list(s, notches));
             Redraw::Content
         }
         Tab::Feed => {
@@ -253,7 +264,7 @@ unsafe fn on_wheel(hwnd: HWND, delta: i32) {
             st(|s| s.feed_scroll = (s.feed_scroll as i32 - notches).clamp(0, s.agents.list.len() as i32) as usize);
             Redraw::Content
         }
-        Tab::Commands | Tab::System => Redraw::None,
+        Tab::System => Redraw::None,
     };
     redraw(hwnd, r);
 }
@@ -443,8 +454,8 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
             }
         }
         WM_HOTKEY => {
-            let tab = if wparam.0 as i32 == HOTKEY_CLIP { Tab::Clipboard } else { Tab::Commands };
-            input::on_hotkey(hwnd, tab);
+            let mode = if wparam.0 as i32 == HOTKEY_CLIP { cmd::MODE_CLIP } else { cmd::MODE_ALL };
+            input::on_hotkey(hwnd, mode);
         }
         WM_CLIPBOARDUPDATE => {
             if clip::on_update(hwnd) {

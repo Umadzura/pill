@@ -200,6 +200,17 @@ impl Painter<'_> {
         let mut r = self.off(r);
         DrawTextW(self.hdc, &mut buf, &mut r, flags | DT_SINGLELINE | DT_NOPREFIX | DT_VCENTER);
     }
+    /// Многострочный текст с переносом по словам, от верхнего края; что не влезло, обрезается.
+    pub unsafe fn text_wrap(&self, font: HFONT, s: &str, r: RECT, c: COLORREF) {
+        if s.is_empty() {
+            return;
+        }
+        SelectObject(self.hdc, font);
+        SetTextColor(self.hdc, c);
+        let mut buf = wide(s);
+        let mut r = self.off(r);
+        DrawTextW(self.hdc, &mut buf, &mut r, DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX);
+    }
     pub unsafe fn measure(&self, font: HFONT, s: &str) -> i32 {
         if s.is_empty() {
             return 0;

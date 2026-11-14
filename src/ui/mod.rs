@@ -1,8 +1,6 @@
 //! Отрисовка GDI. Каждая отрисовка заодно записывает кликабельные зоны в State::hits.
 //! Здесь кадр и вкладки, содержимое — по файлу на вкладку.
 
-pub mod clip;
-mod cmd;
 mod collapsed;
 mod ctl;
 mod feed;
@@ -10,6 +8,7 @@ mod mascot;
 mod music;
 mod paint;
 mod peek;
+pub mod search;
 mod surface;
 mod sys;
 pub mod viz;
@@ -103,7 +102,11 @@ pub unsafe fn render(hwnd: HWND) {
                 p.ox = ear + (body - w) / 2;
                 // Вкладки шириной по подписи. «Система» — группа из двух страниц.
                 let mut left = p.s(16);
-                for (t, name) in TABS.iter() {
+                let searching = s.shell.tab == Tab::Commands;
+                if searching {
+                    search::header(&mut p, s, w);
+                }
+                for (t, name) in TABS.iter().filter(|_| !searching) {
                     // На «Событиях» оранжевый счётчик: скольким агентам нужно разрешение.
                     let badge = if *t == Tab::Feed { s.agents.summary().0 } else { 0 };
                     let extra = if badge > 0 { p.s(22) } else { 0 };
@@ -126,12 +129,17 @@ pub unsafe fn render(hwnd: HWND) {
                     }
                     p.hit(r, h);
                 }
-                let r = RECT { left: 0, top: p.s(14), right: w - p.s(20), bottom: p.s(44) };
-                let clock = match crate::feat::osd::battery_short(s.osd.battery) {
-                    Some(b) => format!("{} · {}", time_text(), b),
-                    None => time_text(),
-                };
-                p.text(fonts.bold, &clock, r, DIM, DT_RIGHT);
+                if !searching {
+                    // Справа лупа (открывает поиск), левее время и батарея.
+                    let lens = RECT { left: w - p.s(50), top: p.s(14), right: w - p.s(20), bottom: p.s(44) };
+                    p.icon_button(lens, I_SEARCH, Hit::Mode(0), false);
+                    let r = RECT { left: 0, top: p.s(14), right: lens.left - p.s(8), bottom: p.s(44) };
+                    let clock = match crate::feat::osd::battery_short(s.osd.battery) {
+                        Some(b) => format!("{} · {}", time_text(), b),
+                        None => time_text(),
+                    };
+                    p.text(fonts.bold, &clock, r, DIM, DT_RIGHT);
+                }
 
                 if let Some(a) = &s.timers.alarm {
                     let body = RECT { left: 0, top: p.s(50), right: w, bottom: h };
@@ -142,8 +150,7 @@ pub unsafe fn render(hwnd: HWND) {
                 } else {
                     match s.shell.tab {
                         Tab::Music => music::draw(&mut p, s, w, h),
-                        Tab::Clipboard => clip::draw(&mut p, s, w),
-                        Tab::Commands => cmd::draw(&mut p, s, w),
+                        Tab::Commands => search::draw(&mut p, s, w, h),
                         Tab::Controls | Tab::System => {
                             subtabs(&mut p, s);
                             // Страницы рисуют от тех же координат, что и раньше: сдвигаем их под переключатель.
