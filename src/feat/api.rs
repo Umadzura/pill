@@ -321,6 +321,7 @@ pub unsafe fn on_events(hwnd: HWND) {
                 use crate::app::Tab;
                 let t = match tab.as_str() {
                     "music" => Some(Tab::Music),
+                    "shelf" => Some(Tab::Shelf),
                     "cmd" | "apps" | "clip" | "act" => Some(Tab::Commands),
                     "ctl" => Some(Tab::Controls),
                     "mon" => Some(Tab::System),

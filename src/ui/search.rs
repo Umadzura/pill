@@ -82,7 +82,7 @@ unsafe fn label(p: &Painter, right: i32, y: i32, title: &str, note: &str) -> i32
 }
 
 /// Значок записи буфера слева в строке: булавка у закреплённой, иначе тип (ссылка, путь, цвет, текст).
-unsafe fn clip_icon(p: &Painter, row: RECT, e: &Entry, pin: bool) {
+pub(super) unsafe fn clip_icon(p: &Painter, row: RECT, e: &Entry, pin: bool) {
     let r = RECT { left: row.left + p.s(10), right: row.left + p.s(34), ..row };
     if pin && e.pinned {
         // Закреплённое — белая точка.

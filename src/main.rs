@@ -95,6 +95,9 @@ fn main() {
             sys::autostart::set(true);
         }
         bg::winrt::start(hwnd);
+        // Файлы можно бросать на пилюлю (полка); миниатюры картинок делает воркер.
+        sys::dragdrop::register(hwnd);
+        feat::shelf::request_thumbs();
         bg::watch::start(hwnd);
         bg::api::start(hwnd);
         let watch = sys::audio::Watch::start(hwnd);

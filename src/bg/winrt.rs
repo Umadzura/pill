@@ -17,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use crate::feat::notifs::{self, Notif};
 use crate::feat::sysmon::{self, Load, Sampler, WarnProbe};
-use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_NOTIF, WM_APP_RADIO, WM_APP_SYS};
+use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_NOTIF, WM_APP_RADIO, WM_APP_SYS, WM_APP_THUMB};
 use crate::sys::display::Displays;
 use crate::sys::toasts;
 
@@ -128,7 +128,17 @@ pub enum Job {
     Notifs,
     /// Убрать уведомление из центра уведомлений Windows и перечитать.
     NotifDrop(u32),
+    /// Миниатюра картинки для полки (результат в `THUMBS`, сигнал `WM_APP_THUMB`).
+    Thumb(String),
 }
+
+/// Готовые миниатюры полки: путь, картинка и её размер в пикселях (None — не вышло).
+pub static THUMBS: Mutex<Vec<(String, Option<(Art, u32, u32)>)>> = Mutex::new(Vec::new());
+/// Миниатюра полки: 2× от плитки 127×74, чтобы на 200% было чётко.
+const THUMB_W: u32 = 254;
+const THUMB_H: u32 = 148;
+/// Файлы больше не читаем целиком ради миниатюры.
+const THUMB_MAX_BYTES: u64 = 40 << 20;
 
 static TX: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
 static HWND_RAW: AtomicIsize = AtomicIsize::new(0);
@@ -329,6 +339,11 @@ fn worker(rx: mpsc::Receiver<Job>) {
                     *sysmon::LOAD_WARN.lock().unwrap() = Some(p.finish(kind));
                     notify(WM_APP_SYS);
                 }
+                Job::Thumb(path) => {
+                    let t = load_thumb(&path);
+                    THUMBS.lock().unwrap().push((path, t));
+                    notify(WM_APP_THUMB);
+                }
                 Job::Notifs | Job::NotifDrop(_) => {
                     // Открываем один раз; нет доступа — больше не пробуем и UI перестаёт просить.
                     if listener.is_none() && !notifs::OFF.load(Ordering::Relaxed) {
@@ -473,6 +488,52 @@ fn pretty_app(id: &str) -> String {
     let s = s.strip_suffix(".exe").or_else(|| s.strip_suffix(".EXE")).unwrap_or(s);
     let s = s.rsplit('.').next().unwrap_or(s);
     s.to_string()
+}
+
+/// Картинка с диска, обрезанная по центру под плитку полки. Файл читается в память целиком.
+fn load_thumb(path: &str) -> Option<(Art, u32, u32)> {
+    use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
+    if std::fs::metadata(path).ok()?.len() > THUMB_MAX_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let stream = InMemoryRandomAccessStream::new().ok()?;
+    let wr = DataWriter::CreateDataWriter(&stream).ok()?;
+    wr.WriteBytes(&bytes).ok()?;
+    wr.StoreAsync().ok()?.get().ok()?;
+    wr.DetachStream().ok()?;
+    drop(bytes);
+    stream.Seek(0).ok()?;
+    let decoder = BitmapDecoder::CreateAsync(&stream).ok()?.get().ok()?;
+    let (w, h) = (decoder.PixelWidth().ok()?, decoder.PixelHeight().ok()?);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    // Заполнить плитку целиком: масштаб по большей стороне, лишнее срезать по центру.
+    let k = (THUMB_W as f64 / w as f64).max(THUMB_H as f64 / h as f64);
+    let (sw, sh) = (((w as f64 * k).ceil() as u32).max(THUMB_W), ((h as f64 * k).ceil() as u32).max(THUMB_H));
+    let t = BitmapTransform::new().ok()?;
+    t.SetScaledWidth(sw).ok()?;
+    t.SetScaledHeight(sh).ok()?;
+    t.SetInterpolationMode(BitmapInterpolationMode::Fant).ok()?;
+    t.SetBounds(BitmapBounds { X: (sw - THUMB_W) / 2, Y: (sh - THUMB_H) / 2, Width: THUMB_W, Height: THUMB_H }).ok()?;
+    let data = decoder
+        .GetPixelDataTransformedAsync(
+            BitmapPixelFormat::Bgra8,
+            BitmapAlphaMode::Premultiplied,
+            &t,
+            ExifOrientationMode::IgnoreExifOrientation,
+            ColorManagementMode::DoNotColorManage,
+        )
+        .ok()?
+        .get()
+        .ok()?
+        .DetachPixelData()
+        .ok()?;
+    if data.len() < (THUMB_W * THUMB_H * 4) as usize {
+        return None;
+    }
+    Some((Art { w: THUMB_W as i32, h: THUMB_H as i32, px: data.to_vec() }, w, h))
 }
 
 fn load_art(props: &GlobalSystemMediaTransportControlsSessionMediaProperties) -> Option<Art> {
