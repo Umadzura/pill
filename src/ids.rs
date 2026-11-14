@@ -29,6 +29,8 @@ pub const WM_APP_SYS: u32 = WM_APP + 10;
 pub const WM_APP_API: u32 = WM_APP + 11;
 /// Воркер: список чужих уведомлений поменялся или пришло новое (`feat::notifs::INBOX`).
 pub const WM_APP_NOTIF: u32 = WM_APP + 12;
+/// Отрисовка узнала, что содержимому вкладки нужна другая высота панели: переложить окно.
+pub const WM_APP_LAYOUT: u32 = WM_APP + 13;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;

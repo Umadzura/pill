@@ -126,6 +126,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     let tw = p.measure(p.f.small, &note.0).min(p.s(x0 - 12 - 20 - 24));
     let chip = RECT { left: p.s(20), top: p.s(y + 4), right: p.s(20) + tw + p.s(24), bottom: p.s(y + PW - 4) };
     p.text(p.f.small, &note.0, RECT { left: chip.left + p.s(2), right: chip.right, ..chip }, note.1, DT_LEFT | DT_END_ELLIPSIS);
+    p.reach(y + PW);
     y += PW + 8;
 
     // Кто держит микрофон и камеру.
@@ -146,6 +147,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
             p.fill(r, R_PILL, if off { DANGER } else if p.hovered(hit) { HOVER } else { PANEL });
             p.text(p.f.small, if off { "Включить микрофон" } else { "Выключить микрофон" }, r, FG, DT_CENTER);
             p.hit(r, hit);
+            p.reach(y + 22);
             text_right -= 170;
             if off && u.mic.is_empty() {
                 parts.insert(0, "Микрофон выключен".to_string());
@@ -155,6 +157,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State, w: i32, h: i32) {
     if !parts.is_empty() {
         let c = if u.cam.is_empty() { MIC } else { CAM };
         p.text(p.f.small, &format!("●  {}", parts.join("   ·   ")), p.r(20, y, text_right, y + 20), c, DT_LEFT | DT_END_ELLIPSIS);
+        p.reach(y + 20);
     }
     let _ = h;
 }

@@ -117,6 +117,7 @@ unsafe fn agents_page(p: &mut Painter, s: &State, w: i32, h: i32) {
     if s.agents.list.is_empty() {
         let r = RECT { left: p.s(20), top: p.s(LIST_TOP), right: w - p.s(20), bottom: p.s(LIST_TOP + 24) };
         p.text(p.f.small, "Пока никого. Claude Code появится после первого запроса (хуки шлют события в /hook).", r, DIM, DT_LEFT | DT_END_ELLIPSIS);
+        p.reach(LIST_TOP + 24);
         return;
     }
     let order = s.agents.order();
@@ -125,12 +126,18 @@ unsafe fn agents_page(p: &mut Painter, s: &State, w: i32, h: i32) {
     for (n, &i) in order.iter().skip(start).take(CARDS).enumerate() {
         card(p, s, w, LIST_TOP + n as i32 * CARD_STEP, i, &s.agents.list[i], now);
     }
+    let shown = order.len().saturating_sub(start).min(CARDS) as i32;
+    let end = LIST_TOP + shown * CARD_STEP - (CARD_STEP - CARD_H);
+    p.reach(end);
     let more = order.len().saturating_sub(start + CARDS);
-    let foot = RECT { left: p.s(20), top: h - p.s(26), right: w - p.s(24), bottom: h - p.s(8) };
     if more > 0 || start > 0 {
+        // Подпись сразу под последней карточкой: панель по высоте содержимого.
+        let foot = RECT { left: p.s(20), top: p.s(end + 6), right: w - p.s(24), bottom: p.s(end + 24) };
         let t = if more > 0 { format!("ещё {} ↓", more) } else { "↑ к началу".to_string() };
         p.text(p.f.small, &t, foot, DIM, DT_RIGHT);
+        p.reach(end + 24);
     }
+    let _ = h;
 }
 
 unsafe fn notifs_page(p: &mut Painter, w: i32, h: i32, list: &[Notif]) {
@@ -139,6 +146,7 @@ unsafe fn notifs_page(p: &mut Painter, w: i32, h: i32, list: &[Notif]) {
         let off = notifs::OFF.load(std::sync::atomic::Ordering::Relaxed);
         let msg = if off { "Нет доступа: Параметры → Конфиденциальность → Уведомления" } else { "Новых нет" };
         p.text(p.f.small, msg, RECT { left: p.s(20), top: p.s(y), right: w - p.s(20), bottom: p.s(y + 24) }, DIM, DT_LEFT);
+        p.reach(y + 24);
         return;
     }
     let now_ft = crate::sys::toasts::now_filetime();
@@ -190,6 +198,7 @@ unsafe fn notifs_page(p: &mut Painter, w: i32, h: i32, list: &[Notif]) {
         let body = g.last.last().map(String::as_str).unwrap_or("");
         p.text(p.f.small, body, RECT { left, top: row.top + p.s(24), right, bottom: row.bottom - p.s(5) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
         p.hit(row, hit);
+        p.reach(y - (NOTIF_STEP - NOTIF_H));
     }
 }
 
