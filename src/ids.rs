@@ -66,6 +66,8 @@ pub const HOTKEY_ALLOW: i32 = 3;
 pub const HOTKEY_ALWAYS: i32 = 4;
 pub const HOTKEY_DENY: i32 = 5;
 pub const HOTKEY_TERM: i32 = 6;
+/// Ctrl+Alt+H: спрятать пилюлю, чтобы нажать то, что под ней; ещё раз — вернуть.
+pub const HOTKEY_HIDE: i32 = 7;
 
 pub const MENU_AUTOSTART: usize = 10;
 pub const MENU_EXIT: usize = 11;

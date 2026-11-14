@@ -147,11 +147,12 @@ pub fn assemble(f: Facts) -> View {
     if f.cam {
         lead.push(Lead::Cam);
     }
-    if f.art && f.playing {
-        lead.push(Lead::Art);
-    }
+    // Агент левее музыки: он важнее обложки.
     if let Some(count) = f.agents {
         lead.push(Lead::Mascot { count });
+    }
+    if f.art && f.playing {
+        lead.push(Lead::Art);
     }
     View { lead, text, tone: Tone::Plain, level: false, viz: f.playing, dim_from, plain: true, task_bar: f.task_bar, unread: f.unread }
 }
@@ -242,7 +243,7 @@ mod tests {
         });
         assert_eq!(v.text, format!("14:32   Рендер 45%   ⏱ {}  87%", fmt_dur(90)));
         assert_eq!(v.dim_from.map(|i| &v.text[i..]), Some("87%"));
-        assert_eq!(v.lead, vec![Lead::Mic, Lead::Art, Lead::Mascot { count: 2 }]);
+        assert_eq!(v.lead, vec![Lead::Mic, Lead::Mascot { count: 2 }, Lead::Art]);
         // точка + зазор, обложка, маскот с числом
         assert_eq!(v.left_width(), (DOT + 4) + DOT_GAP + (ART + 10) + (MASCOT_W + 8 + 12));
         assert_eq!(v.right_width(), EQ_W + 10);

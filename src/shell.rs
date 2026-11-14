@@ -75,6 +75,8 @@ pub struct Shell {
     fullscreen: bool,
     /// Сколько секунд подряд проверка не видит полноэкранного окна.
     fs_miss: u8,
+    /// Пилюлю спрятали сочетанием клавиш (Ctrl+Alt+H), чтобы достать то, что под ней.
+    pub hidden: bool,
 }
 
 impl Shell {
@@ -94,11 +96,12 @@ impl Shell {
             icon: sys::icon::make(),
             fullscreen: false,
             fs_miss: 0,
+            hidden: false,
         }
     }
     /// Пилюлю сейчас видно (в полноэкранном режиме прячемся, если панель не открыта хоткеем).
     pub fn visible(&self) -> bool {
-        !self.fullscreen || self.expanded
+        !self.hidden && (!self.fullscreen || self.expanded)
     }
     /// Идёт анимация: какой вид рисовать (MODE_*).
     pub fn anim_view(&self) -> Option<u8> {
@@ -161,7 +164,7 @@ pub unsafe fn layout(hwnd: HWND) {
         place(hwnd, w, h);
     }
     // В полноэкранном режиме прячемся. Открыли хоткеем — показываемся, пока панель раскрыта.
-    let want = st(|s| !s.shell.fullscreen || s.shell.expanded);
+    let want = st(|s| s.shell.visible());
     if want && !visible {
         // Заодно снова встаём поверх: полноэкранные программы любят забирать TOPMOST.
         let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -202,6 +205,10 @@ pub unsafe fn set_expanded(hwnd: HWND, value: bool) {
     let changed = st(|s| {
         let c = s.shell.expanded != value;
         s.shell.expanded = value;
+        // Панель открыли (хоткеем поиска): спрятанная пилюля возвращается.
+        if value {
+            s.shell.hidden = false;
+        }
         // Поиск — не вкладка: свернувшись, возвращаемся туда, откуда его открыли.
         if !value && s.shell.tab == Tab::Commands {
             s.shell.tab = s.input.back.unwrap_or(Tab::Music);
@@ -223,6 +230,20 @@ pub unsafe fn set_expanded(hwnd: HWND, value: bool) {
         layout(hwnd);
         crate::feat::viz::refresh_want();
     }
+}
+
+/// Ctrl+Alt+H: спрятать пилюлю или вернуть её. Пока спрятана, окна нет вовсе: клики идут в то, что под ней.
+/// Возвращают её то же сочетание, хоткей поиска и просьба агента о разрешении.
+pub unsafe fn toggle_hidden(hwnd: HWND) {
+    let hidden = st(|s| {
+        s.shell.hidden = !s.shell.hidden;
+        s.shell.hidden
+    });
+    if hidden {
+        crate::input::close_panel(hwnd, true);
+    }
+    layout(hwnd);
+    crate::feat::viz::refresh_want();
 }
 
 pub unsafe fn cursor_inside(hwnd: HWND) -> bool {
