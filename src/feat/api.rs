@@ -313,6 +313,8 @@ pub unsafe fn on_events(hwnd: HWND) {
                     "feed" | "notifs" => Some(Tab::Feed),
                     _ => None,
                 };
+                // Ярлыки меню Пуск читаем до st(): это обход папок.
+                let apps = (t == Some(Tab::Commands)).then(crate::feat::cmd::scan);
                 if let Some(t) = t {
                     st(|s| {
                         s.shell.tab = t;
@@ -327,7 +329,9 @@ pub unsafe fn on_events(hwnd: HWND) {
                             s.input.text = query.clone();
                             s.input.sel = 0;
                             s.input.scroll = 0;
-                            s.cmd.apps = crate::feat::cmd::scan();
+                            if let Some(a) = apps {
+                                s.cmd.apps = a;
+                            }
                         }
                     });
                 }
