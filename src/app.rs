@@ -103,6 +103,8 @@ pub struct State {
     pub notif_flip: bool,
     /// Карточка из чёлки (уведомление, просьба агента), если показана.
     pub peek: Option<Peek>,
+    /// Просьбы агентов, ждущие своей очереди на показ (на экране одна).
+    pub asks: Vec<Peek>,
     /// До какого момента не показывать карточки уведомлений (кнопка «Тишина на час»).
     pub quiet_until: Option<Instant>,
     /// «События»: открыта страница уведомлений (иначе агенты) и с какой карточки агентов начинать.
@@ -139,6 +141,7 @@ pub unsafe fn init_state() {
         sys_sampling: false,
         notif_flip: false,
         peek: None,
+        asks: Vec::new(),
         quiet_until: None,
         feed_notifs: false,
         feed_scroll: 0,
@@ -478,8 +481,11 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
             }
         }
         WM_HOTKEY => {
-            let mode = if wparam.0 as i32 == HOTKEY_CLIP { cmd::MODE_CLIP } else { cmd::MODE_ALL };
-            input::on_hotkey(hwnd, mode);
+            match wparam.0 as i32 {
+                id @ (HOTKEY_ALLOW | HOTKEY_ALWAYS | HOTKEY_DENY | HOTKEY_TERM) => peek::on_hotkey(hwnd, id),
+                HOTKEY_CLIP => input::on_hotkey(hwnd, cmd::MODE_CLIP),
+                _ => input::on_hotkey(hwnd, cmd::MODE_ALL),
+            }
         }
         WM_CLIPBOARDUPDATE => {
             if clip::on_update(hwnd) {

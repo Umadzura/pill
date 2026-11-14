@@ -93,7 +93,8 @@ pub unsafe fn render(hwnd: HWND) {
                 collapsed::draw(&mut p, s, RECT { left: 0, top: 0, right: w - 2 * ear, bottom: h });
             } else if view == MODE_PEEK {
                 // Карточка в полной раскладке по центру.
-                p.ox = ear + (w - 2 * ear - p.s(crate::feat::peek::W)) / 2;
+                let pw = s.peek.as_ref().map(|k| k.width()).unwrap_or(crate::feat::peek::W);
+                p.ox = ear + (w - 2 * ear - p.s(pw)) / 2;
                 peek::draw(&mut p, s);
             } else {
                 // Раскладка всегда под полный размер; во время анимации она по центру и обрезана.

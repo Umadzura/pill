@@ -122,11 +122,11 @@ unsafe fn place(hwnd: HWND, w: i32, h: i32) {
 /// Форму (ушки, скруглённый низ) даёт отрисовка. Раскрытие и сворачивание идут плавно (TIMER_ANIM).
 pub unsafe fn layout(hwnd: HWND) {
     let (now_mode, peek_h, dpi, text, level, lead) =
-        st(|s| (mode(s), s.peek.as_ref().map(|p| p.height()), s.shell.dpi, pill::text(s), pill::shows_level(s), pill::lead_width(s)));
+        st(|s| (mode(s), s.peek.as_ref().map(|p| (p.width(), p.height())), s.shell.dpi, pill::text(s), pill::shows_level(s), pill::lead_width(s)));
     let (w, h) = if now_mode == MODE_EXPANDED {
         (scale(EXPANDED_W, dpi), scale(EXPANDED_H, dpi))
-    } else if let Some(ph) = peek_h {
-        (scale(crate::feat::peek::W, dpi), scale(ph, dpi))
+    } else if let Some((pw, ph)) = peek_h {
+        (scale(pw, dpi), scale(ph, dpi))
     } else if level {
         (scale(LEVEL_W, dpi), scale(COLLAPSED_H, dpi))
     } else {
@@ -374,7 +374,7 @@ unsafe fn tray_menu(hwnd: HWND) {
     let mut cfg = st(|s| s.settings.clone());
     let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
     let _ = AppendMenuW(menu, MF_STRING | check(cfg.dot_mode), MENU_DOT, w!("Просто точка: карточки не выезжают"));
-    let _ = AppendMenuW(menu, MF_STRING | check(cfg.sound), MENU_SOUND, w!("Звук таймера"));
+    let _ = AppendMenuW(menu, MF_STRING | check(cfg.sound), MENU_SOUND, w!("Звуки: таймер, просьбы агентов, «закончил»"));
     let delays = [(200, w!("Быстро, 0,2 с")), (350, w!("Обычно, 0,35 с")), (600, w!("Медленно, 0,6 с")), (1000, w!("Очень медленно, 1 с"))];
     if let Ok(sub) = CreatePopupMenu() {
         for (i, (ms, label)) in delays.iter().enumerate() {

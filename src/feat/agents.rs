@@ -63,6 +63,41 @@ pub struct Extra {
     pub cwd: Option<String>,
     /// Последний ответ агента (если хук его прислал).
     pub answer: Option<String>,
+    /// Просьба о разрешении: строки того, что хочет сделать инструмент, и сколько строк он добавляет и убирает.
+    pub ask_lines: Vec<String>,
+    pub ask_stat: (usize, usize),
+    /// Просьба о разрешении: готовые правила «больше не спрашивать», как их прислал Claude Code
+    /// (JSON-массив `permission_suggestions`). Их же возвращаем в ответе «Всегда».
+    pub suggestions: Option<String>,
+}
+
+/// Сколько строк кода показываем в карточке просьбы.
+const ASK_LINES: usize = 6;
+
+/// Что именно просит инструмент, по его параметрам: строки для карточки («-» убрано, «+» добавлено,
+/// пробел — команда как есть) и счётчики добавленных и убранных строк.
+pub fn ask_detail(input: &HashMap<String, String>) -> (Vec<String>, (usize, usize)) {
+    let clip = |s: &str| -> String { s.replace('\t', "    ").chars().filter(|c| !c.is_control()).take(110).collect() };
+    let mut lines = Vec::new();
+    let (mut plus, mut minus) = (0, 0);
+    let (old, new) = (input.get("old_string"), input.get("new_string").or(input.get("content")));
+    if old.is_some() || new.is_some() {
+        for l in old.map(|o| o.lines()).into_iter().flatten() {
+            minus += 1;
+            if lines.len() < ASK_LINES / 2 {
+                lines.push(format!("-{}", clip(l)));
+            }
+        }
+        for l in new.map(|n| n.lines()).into_iter().flatten() {
+            plus += 1;
+            if lines.len() < ASK_LINES {
+                lines.push(format!("+{}", clip(l)));
+            }
+        }
+    } else if let Some(c) = input.get("command") {
+        lines.extend(c.lines().take(ASK_LINES).map(|l| format!(" {}", clip(l))));
+    }
+    (lines, (plus, minus))
 }
 
 /// Что показать после события агента.
@@ -91,6 +126,11 @@ pub struct Agent {
     /// Ветка git. None — ещё не читали, пустая строка — не репозиторий.
     pub branch: Option<String>,
     pub cwd: String,
+    /// Последняя просьба о разрешении: строки кода и счётчики (см. `ask_detail`).
+    pub ask_lines: Vec<String>,
+    pub ask_stat: (usize, usize),
+    /// На последнюю просьбу можно ответить «всегда» (хук прислал готовое правило).
+    pub ask_always: bool,
 }
 
 #[derive(Default)]
@@ -147,7 +187,7 @@ impl Agents {
                         self.list.remove(old);
                     }
                 }
-                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, updated: now, tool: String::new(), answer: String::new(), branch: None, cwd: String::new() });
+                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, updated: now, tool: String::new(), answer: String::new(), branch: None, cwd: String::new(), ask_lines: Vec::new(), ask_stat: (0, 0), ask_always: false });
                 true
             }
         };
@@ -166,8 +206,14 @@ impl Agents {
             if let Some(c) = extra.cwd {
                 a.cwd = c;
             }
+            if u.state == AgentState::Ask {
+                a.ask_lines = extra.ask_lines;
+                a.ask_stat = extra.ask_stat;
+                a.ask_always = extra.suggestions.is_some();
+            }
         }
-        let text = self.list.iter().find(|a| a.id == id).map(|a| a.note.clone()).unwrap_or_default();
+        // Что показать в карточке: у просьбы из хука — инструмент, иначе текст события.
+        let text = self.list.iter().find(|a| a.id == id).map(|a| if u.state == AgentState::Ask && u.answerable && !a.tool.is_empty() { a.tool.clone() } else { a.note.clone() }).unwrap_or_default();
         match u.state {
             // Хук с ожиданием ответа показываем всегда: он мог прийти после простого уведомления.
             AgentState::Ask if changed || u.answerable => Some(Notice::Ask { name, text, answerable: u.answerable }),
@@ -264,19 +310,20 @@ pub fn from_hook(json: &str) -> Option<Update> {
     // Имя агента — папка проекта.
     let name = f.get("cwd").and_then(|c| c.rsplit(['/', '\\']).find(|p| !p.is_empty())).map(str::to_string);
     // «Bash: cargo build» — инструмент и главное из его параметров.
-    let tool = f.get("tool_name").map(|tool| {
-        let input = objs.get("tool_input").map(|o| json_strings(o)).unwrap_or_default();
-        match ["command", "file_path", "url", "pattern", "description", "prompt"].iter().find_map(|k| input.get(*k)) {
-            Some(d) => format!("{}: {}", tool, d),
-            None => tool.clone(),
-        }
+    let input = objs.get("tool_input").map(|o| json_strings(o)).unwrap_or_default();
+    let tool = f.get("tool_name").map(|tool| match ["command", "file_path", "url", "pattern", "description", "prompt"].iter().find_map(|k| input.get(*k)) {
+        // У команды в заголовке только первая строка: целиком она идёт в блок кода.
+        Some(d) => format!("{}: {}", tool, d.lines().next().unwrap_or("")),
+        None => tool.clone(),
     });
-    let extra = Extra { tool: tool.clone(), cwd: f.get("cwd").cloned(), answer: f.get("last_assistant_message").cloned() };
+    let (ask_lines, ask_stat) = ask_detail(&input);
+    let extra = Extra { tool: tool.clone(), cwd: f.get("cwd").cloned(), answer: f.get("last_assistant_message").cloned(), ask_lines, ask_stat, suggestions: objs.get("permission_suggestions").filter(|s| s.starts_with('[') && s.len() > 2).cloned() };
     let (state, note) = match f.get("hook_event_name")?.as_str() {
         "UserPromptSubmit" => (AgentState::Work, f.get("prompt").cloned()),
         "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => (AgentState::Work, None),
         "PermissionRequest" => {
-            return Some(Update { id, name, state: AgentState::Ask, note: Some(tool.unwrap_or_default()), answerable: true, extra });
+            // Запрос человека (note) не трогаем: что просит инструмент, лежит в extra.
+            return Some(Update { id, name, state: AgentState::Ask, note: None, answerable: true, extra });
         }
         "Notification" => match f.get("notification_type").map(String::as_str) {
             Some("permission_prompt") | Some("elicitation_dialog") => (AgentState::Ask, f.get("message").cloned()),
@@ -323,7 +370,7 @@ pub fn json_fields(s: &str) -> (HashMap<String, String>, HashMap<String, String>
             i = next;
         } else {
             let Some(next) = skip_value(b, i) else { break };
-            if b[i] == b'{' {
+            if b[i] == b'{' || b[i] == b'[' {
                 objs.insert(key, String::from_utf8_lossy(&b[i..next]).into_owned());
             }
             i = next;
@@ -425,6 +472,32 @@ mod tests {
     }
 
     #[test]
+    fn ask_details() {
+        let input = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<HashMap<_, _>>();
+        // Правка файла: сначала убранные строки, потом добавленные, счётчики по всем строкам.
+        let (lines, stat) = ask_detail(&input(&[("old_string", "a\nb"), ("new_string", "a\n\tc\nd")]));
+        assert_eq!(lines, vec!["-a", "-b", "+a", "+    c", "+d"]);
+        assert_eq!(stat, (3, 2));
+        // Команда: как есть, без счётчиков.
+        assert_eq!(ask_detail(&input(&[("command", "cargo build --release")])), (vec![" cargo build --release".to_string()], (0, 0)));
+        // Новый файл: только добавленные строки, не больше лимита.
+        let (lines, stat) = ask_detail(&input(&[("content", "1\n2\n3\n4\n5\n6\n7\n8")]));
+        assert_eq!((lines.len(), stat), (ASK_LINES, (8, 0)));
+
+        // Просьба из хука не затирает запрос человека и отдаёт в карточку инструмент.
+        let now = Instant::now();
+        let mut a = Agents::default();
+        let hook = |ev: &str, rest: &str| from_hook(&format!(r#"{{"session_id":"s1","cwd":"C:\\p\\pill","hook_event_name":"{}"{}}}"#, ev, rest)).unwrap();
+        a.apply(hook("UserPromptSubmit", r#","prompt":"собери""#), now);
+        let n = a.apply(hook("PermissionRequest", r#","tool_name":"Bash","tool_input":{"command":"cargo build\nls"}"#), now);
+        assert_eq!(n, Some(Notice::Ask { name: "pill".into(), text: "Bash: cargo build".into(), answerable: true }));
+        assert_eq!((a.list[0].note.as_str(), a.list[0].ask_lines.len(), a.list[0].ask_always), ("собери", 2, false));
+        // Claude Code прислал готовое правило: его можно вернуть как «всегда».
+        let u = hook("PermissionRequest", r#","tool_name":"Bash","tool_input":{"command":"ls"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"ls"}],"behavior":"allow","destination":"localSettings"}]"#);
+        assert_eq!(u.extra.suggestions.as_deref(), Some(r#"[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"ls"}],"behavior":"allow","destination":"localSettings"}]"#));
+    }
+
+    #[test]
     fn branch_and_session_details() {
         assert_eq!(branch_from_head("ref: refs/heads/feature/header\n"), "feature/header");
         assert_eq!(branch_from_head("0123456789abcdef\n"), "0123456");
@@ -513,9 +586,10 @@ mod tests {
     #[test]
     fn permission_hook() {
         let u = from_hook(r#"{"session_id":"s1","cwd":"/p/pill","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"cargo build","description":"Сборка"}}"#).unwrap();
-        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Ask, note: Some("Bash: cargo build".into()), answerable: true, extra: u.extra.clone() });
+        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Ask, note: None, answerable: true, extra: u.extra.clone() });
         let u = from_hook(r#"{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Mystery","tool_input":{"n":1}}"#).unwrap();
-        assert_eq!(u.note.as_deref(), Some("Mystery"));
+        // Инструмент без известных параметров: в карточке просто его имя.
+        assert_eq!((u.note.as_deref(), u.extra.tool.as_deref()), (None, Some("Mystery")));
     }
 
     #[test]
