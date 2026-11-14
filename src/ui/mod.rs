@@ -15,11 +15,13 @@ pub mod viz;
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use std::cell::RefCell;
+
 use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, PostMessageW};
 
 use crate::ids::WM_APP_LAYOUT;
 
-use crate::app::{scale, st, Hit, State, Tab, TABS};
+use crate::app::{st, Hit, State, Tab, TABS};
 use crate::shell::{self, BOTTOM_R_COLLAPSED, BOTTOM_R_EXPANDED, EAR, EXPANDED_H, EXPANDED_W, MODE_COLLAPSED, MODE_PEEK};
 use crate::pill::time_text;
 use paint::*;
@@ -68,31 +70,55 @@ pub unsafe fn paint(hwnd: HWND) {
     render(hwnd);
 }
 
-/// Нарисовать кадр в буфер и показать его (UpdateLayeredWindow).
+thread_local! {
+    /// Шрифты живут между кадрами: создавать шесть шрифтов на каждый кадр анимации заметно.
+    static FONTS: RefCell<Option<(u32, Fonts)>> = const { RefCell::new(None) };
+}
+
+/// Нарисовать кадр текущего размера окна и показать его (UpdateLayeredWindow).
 pub unsafe fn render(hwnd: HWND) {
     let mut rc = RECT::default();
     let _ = GetClientRect(hwnd, &mut rc);
-    let (w, h) = (rc.right, rc.bottom);
+    render_sized(hwnd, rc.right, rc.bottom, None, None);
+}
+
+/// Нарисовать кадр w×h и показать его; `pos` — заодно поставить окно туда (размер и место
+/// меняются одним вызовом с картинкой), `cap` — буфер с запасом на время анимации.
+pub unsafe fn render_sized(hwnd: HWND, w: i32, h: i32, pos: Option<POINT>, cap: Option<(i32, i32)>) {
     if w <= 0 || h <= 0 {
         return;
     }
-    surface::with(w, h, |sf| {
+    let dpi = st(|s| s.shell.dpi);
+    FONTS.with(|fc| {
+        let mut fc = fc.borrow_mut();
+        if fc.as_ref().map(|f| f.0) != Some(dpi) {
+            *fc = None;
+            *fc = Some((dpi, Fonts::new(dpi)));
+        }
+        let Some((_, fonts)) = fc.as_ref() else { return };
+        render_with(hwnd, w, h, pos, cap, fonts);
+    });
+}
+
+unsafe fn render_with(hwnd: HWND, w: i32, h: i32, pos: Option<POINT>, cap: Option<(i32, i32)>, fonts: &Fonts) {
+    surface::with(w, h, cap, |sf| {
         let mem = sf.dc;
         let cv = sf.canvas();
         cv.clear(BG);
         SetBkMode(mem, TRANSPARENT);
         let old_font = GetCurrentObject(mem, OBJ_FONT);
 
-        let (radius, ear, relayout) = st(|s| {
-            let fonts = Fonts::new(s.shell.dpi);
-            let mut p = Painter { hdc: mem, cv, oy: 0, ox: 0, dpi: s.shell.dpi, f: &fonts, hits: Vec::new(), hover: s.hover, bottom: 0, viz: None };
+        let (radius, ear, relayout, alpha) = st(|s| {
+            let mut p = Painter { hdc: mem, cv, oy: 0, ox: 0, dpi: s.shell.dpi, f: fonts, hits: Vec::new(), hover: s.hover, bottom: 0, viz: None };
             let ear = p.s(EAR);
-            // Пока окно меняет размер, показываем больший из двух видов, обрезанный его размером.
-            let view = s.shell.anim_view().unwrap_or(shell::mode(s));
-            let expanded = view != MODE_COLLAPSED;
+            // Пока окно меняет размер, сначала гаснет старое содержимое, потом проявляется новое
+            // (в полной раскладке по центру, обрезанное размером окна).
+            let anim = s.shell.anim_phase();
+            let (view, alpha) = anim.unwrap_or((shell::mode(s), 1.0));
             if view == MODE_COLLAPSED {
                 p.ox = ear;
-                collapsed::draw(&mut p, s, RECT { left: 0, top: 0, right: w - 2 * ear, bottom: h });
+                let bottom = h.min(p.s(shell::COLLAPSED_H));
+                collapsed::draw(&mut p, s, RECT { left: 0, top: 0, right: w - 2 * ear, bottom });
             } else if view == MODE_PEEK {
                 // Карточка в полной раскладке по центру.
                 let pw = s.peek.as_ref().map(|k| k.width()).unwrap_or(crate::feat::peek::W);
@@ -178,17 +204,24 @@ pub unsafe fn render(hwnd: HWND) {
                 relayout = std::mem::replace(&mut s.shell.panel_h, want) != want;
             }
             s.hits = std::mem::take(&mut p.hits);
-            s.viz_area = p.viz;
+            // Во время анимации визуализатор не рисует поверх: кадр пересобирается целиком.
+            s.viz_area = if anim.is_some() { None } else { p.viz };
             SelectObject(mem, old_font);
-            drop(fonts);
-            (scale(if expanded { BOTTOM_R_EXPANDED } else { BOTTOM_R_COLLAPSED }, s.shell.dpi), ear, relayout)
+            // Радиус нижних углов растёт вместе с высотой: от пилюли к панели без скачка.
+            let hl = h * 96 / s.shell.dpi as i32;
+            let k = ((hl - shell::COLLAPSED_H) as f32 / 150.0).clamp(0.0, 1.0);
+            let rad = BOTTOM_R_COLLAPSED as f32 + (BOTTOM_R_EXPANDED - BOTTOM_R_COLLAPSED) as f32 * k;
+            ((rad * s.shell.dpi as f32 / 96.0).round() as i32, ear, relayout, alpha)
         });
         if relayout {
             let _ = PostMessageW(hwnd, WM_APP_LAYOUT, WPARAM(0), LPARAM(0));
         }
 
         let _ = GdiFlush();
+        if alpha < 1.0 {
+            cv.fade(alpha);
+        }
         cv.finish(radius, ear);
-        sf.present(hwnd, None);
+        sf.present(hwnd, None, pos);
     });
 }

@@ -41,16 +41,67 @@ pub fn mode(s: &crate::app::State) -> u8 {
     }
 }
 
-/// Длительность раскрытия и сворачивания.
-const ANIM_MS: f32 = 200.0;
+/// Как меняется размер во времени.
+#[derive(Clone, Copy)]
+enum Ease {
+    /// Быстрый старт, мягкая остановка: смена высоты между вкладками.
+    Out,
+    /// Чуть проскакивает цель и возвращается, как пружина: раскрытие.
+    Spring,
+    /// Плавный разгон и торможение: сворачивание.
+    InOut,
+}
 
-/// Плавная смена размера окна при раскрытии и сворачивании.
+impl Ease {
+    fn at(self, t: f32) -> f32 {
+        match self {
+            Ease::Out => 1.0 - (1.0 - t).powi(3),
+            Ease::Spring => {
+                let (c1, u) = (1.2, t - 1.0);
+                1.0 + (c1 + 1.0) * u.powi(3) + c1 * u * u
+            }
+            Ease::InOut => {
+                if t < 0.5 {
+                    4.0 * t * t * t
+                } else {
+                    1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+                }
+            }
+        }
+    }
+}
+
+/// Плавная смена размера окна: раскрытие, сворачивание, карточка, высота вкладки.
 struct Anim {
-    /// Что рисовать, пока едем: больший из двух видов (он обрезается размером окна).
-    view: u8,
+    /// Какой вид был и какой будет (MODE_*): старое содержимое гаснет, новое проявляется.
+    from_mode: u8,
+    to_mode: u8,
     from: (i32, i32),
     to: (i32, i32),
     start: std::time::Instant,
+    ms: f32,
+    ease: Ease,
+    /// Буфер с запасом на весь переход (с учётом проскока пружины).
+    cap: (i32, i32),
+    /// Курсор был над окном, когда переход начался (открыли наведением, а не хоткеем или скриптом).
+    hovered: bool,
+}
+
+impl Anim {
+    fn new(from_mode: u8, to_mode: u8, from: (i32, i32), to: (i32, i32)) -> Anim {
+        let (ms, ease) = if from_mode == to_mode {
+            (220.0, Ease::Out)
+        } else if to_mode > from_mode {
+            (if to_mode == MODE_EXPANDED { 360.0 } else { 300.0 }, Ease::Spring)
+        } else {
+            (240.0, Ease::InOut)
+        };
+        let cap = (from.0.max(to.0) * 11 / 10, from.1.max(to.1) * 11 / 10);
+        Anim { from_mode, to_mode, from, to, start: std::time::Instant::now(), ms, ease, cap, hovered: false }
+    }
+    fn t(&self) -> f32 {
+        (self.start.elapsed().as_secs_f32() * 1000.0 / self.ms).min(1.0)
+    }
 }
 
 pub struct Shell {
@@ -65,8 +116,6 @@ pub struct Shell {
     pub last_collapsed: String,
     size: (i32, i32),
     anim: Option<Anim>,
-    /// Вид, который был на экране до текущей анимации.
-    last_view: u8,
     /// Каким окно было при прошлой раскладке (MODE_*): смена запускает анимацию.
     shown_mode: u8,
     pub taskbar_created: u32,
@@ -77,6 +126,10 @@ pub struct Shell {
     fs_miss: u8,
     /// Высота раскрытой панели (логические px) по содержимому открытой вкладки; считает отрисовка.
     pub panel_h: i32,
+    /// Курсор «ушёл» во время анимации: проверить, когда она закончится.
+    pub leave_pending: bool,
+    /// На время анимации включена точность таймеров 1 мс (timeBeginPeriod), её надо вернуть.
+    hires: bool,
     /// Пилюлю спрятали сочетанием клавиш (Ctrl+Alt+H), чтобы достать то, что под ней.
     pub hidden: bool,
 }
@@ -92,13 +145,14 @@ impl Shell {
             last_collapsed: String::new(),
             size: (0, 0),
             anim: None,
-            last_view: MODE_COLLAPSED,
             shown_mode: MODE_COLLAPSED,
             taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
             icon: sys::icon::make(),
             fullscreen: false,
             fs_miss: 0,
             hidden: false,
+            hires: false,
+            leave_pending: false,
             panel_h: EXPANDED_H,
         }
     }
@@ -106,9 +160,34 @@ impl Shell {
     pub fn visible(&self) -> bool {
         !self.hidden && (!self.fullscreen || self.expanded)
     }
-    /// Идёт анимация: какой вид рисовать (MODE_*).
-    pub fn anim_view(&self) -> Option<u8> {
-        self.anim.as_ref().map(|a| a.view)
+    /// Идёт анимация: какой вид рисовать и насколько он проявлен (0..1). Сначала гаснет старый вид,
+    /// потом проявляется новый; при росте окна новый появляется раньше, при сворачивании позже.
+    pub fn anim_phase(&self) -> Option<(u8, f32)> {
+        let a = self.anim.as_ref()?;
+        if a.from_mode == a.to_mode {
+            return Some((a.to_mode, 1.0));
+        }
+        let t = a.t();
+        let split = if a.to_mode > a.from_mode { 0.25 } else { 0.4 };
+        let smooth = |x: f32| x * x * (3.0 - 2.0 * x);
+        Some(if t < split {
+            (a.from_mode, smooth(1.0 - t / split))
+        } else {
+            (a.to_mode, smooth(((t - split) / (1.0 - split)).min(1.0)))
+        })
+    }
+    /// Курсор ушёл, пока окно меняет размер. true — решение отложено до конца анимации.
+    /// Если окно открыли не наведением, курсор мог попасть в окно только из-за проскока пружины:
+    /// такой уход просто не считается.
+    pub fn leave_during_anim(&mut self) -> bool {
+        match self.anim.as_ref().map(|a| a.hovered) {
+            Some(true) => {
+                self.leave_pending = true;
+                true
+            }
+            Some(false) => true,
+            None => false,
+        }
     }
     /// Сбросить запомненный размер: следующий layout() обязательно переставит окно.
     pub fn invalidate_size(&mut self) {
@@ -116,12 +195,28 @@ impl Shell {
     }
 }
 
-/// Поставить окно размером w×h по центру верхнего края и сразу показать кадр этого размера
-/// (слоёное окно само не перерисовывается).
+/// Поставить окно размером w×h по центру верхнего края и сразу показать кадр этого размера.
+/// Размер, место и картинка меняются одним вызовом UpdateLayeredWindow: если сначала двигать окно,
+/// а потом рисовать, на один кадр видна старая картинка в новом месте, и анимация дёргается.
 unsafe fn place(hwnd: HWND, w: i32, h: i32) {
     let x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
-    let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, TOP_MARGIN, w, h, SWP_NOACTIVATE);
-    ui::render(hwnd);
+    let cap = st(|s| s.shell.anim.as_ref().map(|a| a.cap));
+    ui::render_sized(hwnd, w, h, Some(POINT { x, y: TOP_MARGIN }), cap);
+}
+
+/// Запустить анимацию. На её время таймеры Windows точнее (1 мс вместо 15,6), иначе кадры идут рывками.
+unsafe fn start_anim(hwnd: HWND, mut a: Anim) {
+    let first = st(|s| {
+        a.hovered = s.shell.tracking;
+        let first = !s.shell.hires;
+        s.shell.hires = true;
+        s.shell.anim = Some(a);
+        first
+    });
+    if first {
+        let _ = windows::Win32::Media::timeBeginPeriod(1);
+    }
+    SetTimer(hwnd, TIMER_ANIM, 8, None);
 }
 
 /// Считает размер окна по содержимому и ставит его по центру верхнего края основного монитора.
@@ -143,33 +238,32 @@ pub unsafe fn layout(hwnd: HWND) {
     let w = w + 2 * scale(EAR, dpi);
     let visible = IsWindowVisible(hwnd).as_bool();
     let (changed, flip) = st(|s| {
-        if s.shell.anim.is_none() {
-            s.shell.last_view = s.shell.shown_mode;
-        }
         s.shell.last_collapsed = text;
         let c = s.shell.size != (w, h);
         s.shell.size = (w, h);
         (c, std::mem::replace(&mut s.shell.shown_mode, now_mode))
     });
+    let old_mode = flip;
     let flip = flip != now_mode;
     if flip && visible {
         // Вид сменился: едем от текущего размера окна к новому.
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
-        st(|s| {
-            let old = s.shell.anim_view().unwrap_or(0);
-            let view = old.max(now_mode).max(if rc.bottom > scale(COLLAPSED_H, dpi) { s.shell.last_view } else { 0 });
-            s.shell.anim = Some(Anim { view, from: (rc.right, rc.bottom), to: (w, h), start: std::time::Instant::now() })
-        });
-        SetTimer(hwnd, TIMER_ANIM, 15, None);
-    } else if st(|s| s.shell.anim.as_mut().map(|a| a.to = (w, h)).is_some()) {
-        // Анимация уже идёт: поменялась только цель.
+        start_anim(hwnd, Anim::new(old_mode, now_mode, (rc.right, rc.bottom), (w, h)));
+    } else if st(|s| {
+        s.shell.anim.as_mut().map(|a| {
+            // Анимация уже идёт: поменялась только цель.
+            a.to = (w, h);
+            a.cap = (a.cap.0.max(w * 11 / 10), a.cap.1.max(h * 11 / 10));
+        })
+    })
+    .is_some()
+    {
     } else if changed && visible && now_mode == MODE_EXPANDED {
         // Другая вкладка — другая высота: панель подтягивается плавно, а не прыгает.
         let mut rc = RECT::default();
         let _ = GetClientRect(hwnd, &mut rc);
-        st(|s| s.shell.anim = Some(Anim { view: MODE_EXPANDED, from: (rc.right, rc.bottom), to: (w, h), start: std::time::Instant::now() }));
-        SetTimer(hwnd, TIMER_ANIM, 15, None);
+        start_anim(hwnd, Anim::new(MODE_EXPANDED, MODE_EXPANDED, (rc.right, rc.bottom), (w, h)));
     } else if changed {
         place(hwnd, w, h);
     }
@@ -188,26 +282,34 @@ pub unsafe fn layout(hwnd: HWND) {
 pub unsafe fn on_anim_timer(hwnd: HWND) {
     let step = st(|s| {
         let a = s.shell.anim.as_ref()?;
-        let t = (a.start.elapsed().as_secs_f32() * 1000.0 / ANIM_MS).min(1.0);
-        // Быстрый старт, мягкая остановка.
-        let k = 1.0 - (1.0 - t).powi(3);
-        let lerp = |from: i32, to: i32| from + ((to - from) as f32 * k).round() as i32;
+        let t = a.t();
+        let k = a.ease.at(t);
+        let lerp = |from: i32, to: i32| (from + ((to - from) as f32 * k).round() as i32).max(1);
         let size = (lerp(a.from.0, a.to.0), lerp(a.from.1, a.to.1));
         if t >= 1.0 {
             s.shell.anim = None;
         }
         Some((size, t >= 1.0))
     });
+    let stop = |hwnd: HWND| {
+        let _ = KillTimer(hwnd, TIMER_ANIM);
+        if st(|s| std::mem::take(&mut s.shell.hires)) {
+            let _ = windows::Win32::Media::timeEndPeriod(1);
+        }
+    };
     match step {
         Some((size, done)) => {
             if done {
-                let _ = KillTimer(hwnd, TIMER_ANIM);
+                stop(hwnd);
             }
+            // Последний кадр рисуется уже без запаса: буфер ужмётся до размера окна.
             place(hwnd, size.0, size.1);
+            if done && st(|s| std::mem::take(&mut s.shell.leave_pending)) {
+                // Курсор уходил, пока окно ехало: сворачиваемся, только если он и правда снаружи.
+                schedule_collapse(hwnd);
+            }
         }
-        None => {
-            let _ = KillTimer(hwnd, TIMER_ANIM);
-        }
+        None => stop(hwnd),
     }
 }
 
