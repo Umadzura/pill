@@ -63,6 +63,10 @@ pub enum Hit {
     Ctl(CtlHit),
     /// Переключатель в «Событиях»: false — агенты, true — уведомления.
     FeedPage(bool),
+    /// Режим ПК в «Управлении».
+    PcMode(u8),
+    /// Карточка агента во вкладке «События»: перейти в его окно.
+    AgentGo(usize),
     /// Крестик у агента во вкладке «События»: убрать из списка.
     AgentDrop(usize),
     /// Крестик у чата во вкладке «События»: убрать все его уведомления (id самого свежего).
@@ -107,6 +111,8 @@ pub struct State {
     pub peek: Option<Peek>,
     /// Ползунок, который сейчас тащат мышью (громкость или яркость), и его полоска.
     pub drag: Option<(Hit, RECT)>,
+    /// Программа, для которой режим ПК уже предлагали (чтобы не спрашивать на каждом переключении окна).
+    pub mode_hint: String,
     /// Просьбы агентов, ждущие своей очереди на показ (на экране одна).
     pub asks: Vec<Peek>,
     /// До какого момента не показывать карточки уведомлений (кнопка «Тишина на час»).
@@ -148,6 +154,7 @@ pub unsafe fn init_state() {
         notif_flip: false,
         peek: None,
         drag: None,
+        mode_hint: String::new(),
         asks: Vec::new(),
         quiet_until: None,
         feed_notifs: false,
@@ -218,6 +225,19 @@ unsafe fn on_click(hwnd: HWND, x: i32, y: i32) {
         Hit::FeedPage(notifs_page) => {
             st(|s| s.feed_notifs = notifs_page);
             Redraw::Content
+        }
+        Hit::PcMode(m) => {
+            crate::feat::modes::set(hwnd, m);
+            Redraw::None
+        }
+        Hit::AgentGo(i) => {
+            let name = st(|s| s.agents.list.get(i).map(|a| a.name.clone()));
+            if let Some(n) = name {
+                if sys::wnd::focus_titled(&n) {
+                    input::close_panel(hwnd, false);
+                }
+            }
+            Redraw::None
         }
         Hit::AgentDrop(i) => {
             st(|s| {
@@ -326,7 +346,9 @@ unsafe fn on_notifs(hwnd: HWND) {
         })
     };
     // «Тишина на час»: карточки не выезжают, счётчик пропущенных растёт как обычно.
-    let quiet = st(|s| s.quiet_until.is_some_and(|t| Instant::now() < t));
+    // Карточки не выезжают: «Тишина на час», режим ПК, тихие часы. Счётчик пропущенных растёт как обычно.
+    let hour = sys::local_hm().0;
+    let quiet = st(|s| s.quiet_until.is_some_and(|t| Instant::now() < t) || crate::feat::modes::silent(s.settings.pc_mode) || s.settings.quiet_now(hour));
     match fresh {
         Some(_) if quiet => shell::layout(hwnd),
         Some((n, g)) => {
@@ -364,7 +386,7 @@ unsafe fn on_tick(hwnd: HWND) {
     for id in crate::bg::api::expire() {
         peek::resolve(hwnd, &id);
     }
-    if beep && st(|s| s.settings.sound) {
+    if beep && st(|s| s.settings.sounds_on()) {
         let _ = MessageBeep(MB_ICONEXCLAMATION);
     }
     match load {
@@ -522,6 +544,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         WM_HOTKEY => {
             match wparam.0 as i32 {
                 id @ (HOTKEY_ALLOW | HOTKEY_ALWAYS | HOTKEY_DENY | HOTKEY_TERM) => peek::on_hotkey(hwnd, id),
+                id @ HOTKEY_PICK..=HOTKEY_PICK_LAST => peek::on_hotkey(hwnd, id),
                 HOTKEY_HIDE => shell::toggle_hidden(hwnd),
                 HOTKEY_CLIP => input::on_hotkey(hwnd, cmd::MODE_CLIP),
                 _ => input::on_hotkey(hwnd, cmd::MODE_ALL),
@@ -543,6 +566,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         WM_APP_API => api::on_events(hwnd),
         WM_APP_NOTIF => on_notifs(hwnd),
         WM_APP_LAYOUT => shell::layout(hwnd),
+        WM_APP_FG => crate::feat::modes::on_foreground(hwnd, HWND(wparam.0 as *mut _)),
         WM_APP_SYS => {
             let warn = sysmon::LOAD_WARN.lock().unwrap().take();
             if let Some(text) = warn {

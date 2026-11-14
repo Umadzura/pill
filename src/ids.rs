@@ -31,6 +31,8 @@ pub const WM_APP_API: u32 = WM_APP + 11;
 pub const WM_APP_NOTIF: u32 = WM_APP + 12;
 /// Отрисовка узнала, что содержимому вкладки нужна другая высота панели: переложить окно.
 pub const WM_APP_LAYOUT: u32 = WM_APP + 13;
+/// Сменилось активное окно (SetWinEventHook): wparam — его HWND. Нужно подсказке режимов ПК.
+pub const WM_APP_FG: u32 = WM_APP + 14;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -70,12 +72,17 @@ pub const HOTKEY_DENY: i32 = 5;
 pub const HOTKEY_TERM: i32 = 6;
 /// Ctrl+Alt+H: спрятать пилюлю, чтобы нажать то, что под ней; ещё раз — вернуть.
 pub const HOTKEY_HIDE: i32 = 7;
+/// Alt+1…4: выбрать вариант ответа на вопрос агента (только пока вопрос на экране).
+pub const HOTKEY_PICK: i32 = 8;
+pub const HOTKEY_PICK_LAST: i32 = 11;
 
 pub const MENU_AUTOSTART: usize = 10;
 pub const MENU_EXIT: usize = 11;
 /// Настройки в меню трея (`feat::settings`).
 pub const MENU_DOT: usize = 12;
 pub const MENU_SOUND: usize = 13;
+/// Тихие часы 23–8 вкл/выкл.
+pub const MENU_QUIET: usize = 14;
 /// Четыре пункта подменю «Сворачиваться после ухода курсора»: 20..=23.
 pub const MENU_DELAY: usize = 20;
 pub const MENU_DELAY_LAST: usize = 23;

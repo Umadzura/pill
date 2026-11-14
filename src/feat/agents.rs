@@ -69,6 +69,90 @@ pub struct Extra {
     /// Просьба о разрешении: готовые правила «больше не спрашивать», как их прислал Claude Code
     /// (JSON-массив `permission_suggestions`). Их же возвращаем в ответе «Всегда».
     pub suggestions: Option<String>,
+    /// Вопрос агента с вариантами (инструмент AskUserQuestion).
+    pub question: Option<Question>,
+}
+
+/// Вопрос агента с вариантами ответа.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Question {
+    pub text: String,
+    /// Подписи вариантов (до четырёх).
+    pub options: Vec<String>,
+    /// Сколько вопросов в одном запросе: если больше одного, отвечать в терминале.
+    pub count: usize,
+    /// Параметры инструмента как пришли: их же вернём с ответами.
+    pub raw: String,
+}
+
+/// Элементы JSON-массива как текст (строки — уже без кавычек). Битый массив — что успели прочитать.
+pub fn json_items(s: &str) -> Vec<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = skip_ws(b, 0);
+    if b.get(i) != Some(&b'[') {
+        return out;
+    }
+    i += 1;
+    loop {
+        i = skip_ws(b, i);
+        while b.get(i) == Some(&b',') {
+            i = skip_ws(b, i + 1);
+        }
+        match b.get(i) {
+            None | Some(b']') => break,
+            Some(b'"') => {
+                let Some((v, next)) = json_str(b, i) else { break };
+                out.push(v);
+                i = next;
+            }
+            Some(_) => {
+                let Some(next) = skip_value(b, i) else { break };
+                out.push(String::from_utf8_lossy(&b[i..next]).into_owned());
+                i = next;
+            }
+        }
+    }
+    out
+}
+
+/// Вопрос из параметров AskUserQuestion: `{"questions":[{"question":…,"options":[{"label":…}]}]}`.
+pub fn parse_question(raw: &str) -> Option<Question> {
+    let (_, objs) = json_fields(raw);
+    let qs = json_items(objs.get("questions")?);
+    let first = qs.first()?;
+    let (f, o) = json_fields(first);
+    let options = o.get("options").map(|a| json_items(a)).unwrap_or_default().iter().filter_map(|x| json_strings(x).get("label").cloned()).take(4).collect();
+    Some(Question { text: f.get("question").cloned().unwrap_or_default(), options, count: qs.len(), raw: raw.to_string() })
+}
+
+/// Строка в JSON-кавычках.
+pub fn json_quote(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 2);
+    o.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// Ответ хуку на вопрос: разрешить инструмент, вернув его параметры с выбранным ответом.
+pub fn answer_json(q: &Question, pick: usize) -> Option<String> {
+    let label = q.options.get(pick)?;
+    let raw = q.raw.trim_end();
+    let body = raw.strip_suffix('}')?.trim_end();
+    let sep = if body.ends_with('{') { "" } else { "," };
+    let input = format!("{}{}\"answers\":{{{}:{}}}}}", body, sep, json_quote(&q.text), json_quote(label));
+    Some(format!(r#"{{"hookSpecificOutput":{{"hookEventName":"PermissionRequest","decision":{{"behavior":"allow","updatedInput":{}}}}}}}"#, input))
 }
 
 /// Сколько строк кода показываем в карточке просьбы.
@@ -134,6 +218,8 @@ pub struct Agent {
     pub ask_stat: (usize, usize),
     /// На последнюю просьбу можно ответить «всегда» (хук прислал готовое правило).
     pub ask_always: bool,
+    /// Последняя просьба — вопрос с вариантами.
+    pub question: Option<Question>,
 }
 
 #[derive(Default)]
@@ -190,7 +276,7 @@ impl Agents {
                         self.list.remove(old);
                     }
                 }
-                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, started: now, updated: now, tool: String::new(), answer: String::new(), branch: None, cwd: String::new(), ask_lines: Vec::new(), ask_stat: (0, 0), ask_always: false });
+                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, started: now, updated: now, tool: String::new(), answer: String::new(), branch: None, cwd: String::new(), ask_lines: Vec::new(), ask_stat: (0, 0), ask_always: false, question: None });
                 true
             }
         };
@@ -214,6 +300,7 @@ impl Agents {
                 a.ask_lines = extra.ask_lines;
                 a.ask_stat = extra.ask_stat;
                 a.ask_always = extra.suggestions.is_some();
+                a.question = extra.question.clone();
             }
         }
         // Что показать в карточке: у просьбы из хука — инструмент, иначе текст события.
@@ -318,6 +405,7 @@ pub fn ask_phrase(tool: &str) -> (String, String) {
         "WebSearch" => ("хочет поискать в интернете", short(detail)),
         "Glob" | "Grep" => ("хочет поискать в файлах", short(detail)),
         "Task" | "Agent" => ("хочет запустить помощника", short(detail)),
+        "AskUserQuestion" => ("спрашивает", String::new()),
         n if n.starts_with("mcp__") => ("хочет использовать", n.trim_start_matches("mcp__").replace("__", " · ")),
         n => ("хочет использовать", n.to_string()),
     };
@@ -359,7 +447,11 @@ pub fn from_hook(json: &str) -> Option<Update> {
         None => tool.clone(),
     });
     let (ask_lines, ask_stat) = ask_detail(&input);
-    let extra = Extra { tool: tool.clone(), cwd: f.get("cwd").cloned(), answer: f.get("last_assistant_message").cloned(), ask_lines, ask_stat, suggestions: objs.get("permission_suggestions").filter(|s| s.starts_with('[') && s.len() > 2).cloned() };
+    let extra = Extra { tool: tool.clone(), cwd: f.get("cwd").cloned(), answer: f.get("last_assistant_message").cloned(), ask_lines, ask_stat, suggestions: objs.get("permission_suggestions").filter(|s| s.starts_with('[') && s.len() > 2).cloned(), question: None };
+    let mut extra = extra;
+    if f.get("tool_name").map(String::as_str) == Some("AskUserQuestion") {
+        extra.question = objs.get("tool_input").and_then(|r| parse_question(r));
+    }
     let (state, note) = match f.get("hook_event_name")?.as_str() {
         "UserPromptSubmit" => (AgentState::Work, f.get("prompt").cloned()),
         "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => (AgentState::Work, None),
@@ -513,6 +605,21 @@ mod tests {
 
     fn up(id: &str, state: AgentState) -> Update {
         Update { id: id.into(), name: Some("pill".into()), state, note: None, answerable: false, extra: Extra::default() }
+    }
+
+    #[test]
+    fn question_answer() {
+        let raw = r#"{"questions":[{"question":"Какой \"фреймворк\"?","header":"Ф","options":[{"label":"React","description":"x"},{"label":"Vue"}],"multiSelect":false}]}"#;
+        let q = parse_question(raw).unwrap();
+        assert_eq!((q.text.as_str(), q.options.clone(), q.count), ("Какой \"фреймворк\"?", vec!["React".to_string(), "Vue".into()], 1));
+        let a = answer_json(&q, 1).unwrap();
+        assert!(a.contains(r#""answers":{"Какой \"фреймворк\"?":"Vue"}}"#), "{}", a);
+        assert!(a.starts_with(r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"questions":"#));
+        assert!(answer_json(&q, 5).is_none());
+        // Через хук.
+        let hook = format!(r#"{{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{}}}"#, raw);
+        assert_eq!(from_hook(&hook).unwrap().extra.question.map(|q| q.options.len()), Some(2));
+        assert_eq!(json_items(r#"["a", {"b":1}, 3]"#), vec!["a".to_string(), r#"{"b":1}"#.into(), "3".into()]);
     }
 
     #[test]

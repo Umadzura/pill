@@ -508,6 +508,7 @@ pub unsafe fn tray_menu(hwnd: HWND) {
     let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
     let _ = AppendMenuW(menu, MF_STRING | check(cfg.dot_mode), MENU_DOT, w!("Просто точка: карточки не выезжают"));
     let _ = AppendMenuW(menu, MF_STRING | check(cfg.sound), MENU_SOUND, w!("Звуки: таймер, просьбы агентов, «закончил»"));
+    let _ = AppendMenuW(menu, MF_STRING | check(cfg.quiet.is_some()), MENU_QUIET, w!("Тихие часы 23:00–8:00"));
     let delays = [(200, w!("Быстро, 0,2 с")), (350, w!("Обычно, 0,35 с")), (600, w!("Медленно, 0,6 с")), (1000, w!("Очень медленно, 1 с"))];
     if let Ok(sub) = CreatePopupMenu() {
         for (i, (ms, label)) in delays.iter().enumerate() {
@@ -529,10 +530,11 @@ pub unsafe fn tray_menu(hwnd: HWND) {
         MENU_EXIT => {
             let _ = DestroyWindow(hwnd);
         }
-        id @ (MENU_DOT | MENU_SOUND) | id @ MENU_DELAY..=MENU_DELAY_LAST => {
+        id @ (MENU_DOT | MENU_SOUND | MENU_QUIET) | id @ MENU_DELAY..=MENU_DELAY_LAST => {
             match id {
                 MENU_DOT => cfg.dot_mode = !cfg.dot_mode,
                 MENU_SOUND => cfg.sound = !cfg.sound,
+                MENU_QUIET => cfg.quiet = if cfg.quiet.is_some() { None } else { Some((23, 8)) },
                 _ => cfg.collapse_ms = delays[id - MENU_DELAY].0,
             }
             st(|s| s.settings = cfg.clone());

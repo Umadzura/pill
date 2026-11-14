@@ -103,6 +103,15 @@ pub fn answer(id: &str, decision: Option<Answer>) {
     }
 }
 
+/// Ответить ждущему хуку готовым телом (ответ на вопрос агента).
+pub fn answer_body(id: &str, body: &str) {
+    let mut held = HELD.lock().unwrap();
+    if let Some(i) = held.iter().position(|h| h.0 == id) {
+        let (_, mut s, _, _) = held.remove(i);
+        respond_text(&mut s, 200, body);
+    }
+}
+
 /// Раз в секунду: отпустить хуки, которым не ответили вовремя. Возвращает id их агентов.
 pub fn expire() -> Vec<String> {
     let old: Vec<String> = HELD.lock().unwrap().iter().filter(|h| h.2.elapsed() >= HOLD).map(|h| h.0.clone()).collect();

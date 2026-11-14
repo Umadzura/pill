@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use crate::app::{st, Redraw};
 use crate::feat::agents::AgentState;
-use crate::ids::{HOTKEY_ALLOW, HOTKEY_ALWAYS, HOTKEY_DENY, HOTKEY_TERM, TIMER_PEEK};
+use crate::ids::{HOTKEY_ALLOW, HOTKEY_ALWAYS, HOTKEY_DENY, HOTKEY_PICK, HOTKEY_PICK_LAST, HOTKEY_TERM, TIMER_PEEK};
 use crate::shell::layout;
 
 /// Ширина карточки уведомления и «агент закончил» (логические px).
@@ -26,6 +26,8 @@ pub enum PeekKind {
     /// Агент ждёт разрешения. answerable — хук держит соединение, ответить можно прямо отсюда.
     Ask { id: String, answerable: bool },
     Done,
+    /// Предложение включить режим ПК (номер режима).
+    Mode(u8),
 }
 
 pub struct Peek {
@@ -51,6 +53,8 @@ pub struct Peek {
     pub can_always: bool,
     /// Просьба агента: раскрыто «подробнее» (запрос человека и строки кода).
     pub more: bool,
+    /// Вопрос агента с вариантами вместо просьбы о разрешении.
+    pub question: Option<crate::feat::agents::Question>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -67,11 +71,15 @@ pub enum PeekHit {
     Quiet,
     /// Просьба агента: показать или спрятать подробности.
     More,
+    /// Вопрос агента: выбран вариант.
+    Pick(u8),
+    /// Предложение режима ПК: включить.
+    ModeOn,
 }
 
 impl Peek {
     pub fn new(kind: PeekKind, app: String, title: String, body: String) -> Peek {
-        Peek { kind, app, title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false, more: false }
+        Peek { kind, app, title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false, more: false, question: None }
     }
     pub fn answerable(&self) -> bool {
         matches!(self.kind, PeekKind::Ask { answerable: true, .. })
@@ -91,8 +99,19 @@ impl Peek {
             self.lines.len() as i32 * 18 + 16
         }
     }
+    /// Варианты, на которые можно ответить отсюда (пусто — вопроса нет или их несколько сразу).
+    pub fn picks(&self) -> usize {
+        match &self.question {
+            Some(q) if q.count == 1 => q.options.len(),
+            _ => 0,
+        }
+    }
     /// Высота карточки по содержимому.
     pub fn height(&self) -> i32 {
+        if self.answerable() && self.question.is_some() {
+            // Шапка, вопрос в две строки, варианты по строке, «в терминал».
+            return 84 + self.picks() as i32 * 40 + 40;
+        }
         match self.kind {
             PeekKind::Notif => {
                 // Одно сообщение — до двух строк текста, несколько — по строке на каждое.
@@ -108,19 +127,28 @@ impl Peek {
                 }
             }
             PeekKind::Done => 78,
+            PeekKind::Mode(_) => 112,
             _ => 86,
         }
     }
 }
 
 /// Клавиши ответа живут только пока просьба на экране: Pill не берёт фокус, поэтому они глобальные.
-unsafe fn hotkeys(hwnd: HWND, on: bool) {
+/// `picks` — сколько вариантов ответа: на них ещё Alt+1…4.
+unsafe fn hotkeys(hwnd: HWND, on: bool, picks: usize) {
     let keys = [(HOTKEY_ALLOW, b'Y'), (HOTKEY_ALWAYS, b'A'), (HOTKEY_DENY, b'N'), (HOTKEY_TERM, b'T')];
     for (id, key) in keys {
         if on {
             let _ = RegisterHotKey(hwnd, id, MOD_ALT | MOD_NOREPEAT, key as u32);
         } else {
             let _ = UnregisterHotKey(hwnd, id);
+        }
+    }
+    for i in 0..=(HOTKEY_PICK_LAST - HOTKEY_PICK) {
+        if on && (i as usize) < picks {
+            let _ = RegisterHotKey(hwnd, HOTKEY_PICK + i, MOD_ALT | MOD_NOREPEAT, b'1' as u32 + i as u32);
+        } else {
+            let _ = UnregisterHotKey(hwnd, HOTKEY_PICK + i);
         }
     }
 }
@@ -139,6 +167,7 @@ pub unsafe fn show(hwnd: HWND, peek: Peek, ms: Option<u32>) {
         return;
     }
     let ask = peek.answerable();
+    let picks = peek.picks();
     let shown = st(|s| {
         let busy = s.peek.as_ref().is_some_and(|p| p.answerable());
         if busy {
@@ -160,7 +189,7 @@ pub unsafe fn show(hwnd: HWND, peek: Peek, ms: Option<u32>) {
     if let Some(ms) = ms {
         SetTimer(hwnd, TIMER_PEEK, ms, None);
     }
-    hotkeys(hwnd, ask);
+    hotkeys(hwnd, ask, picks);
     if ask {
         // Просьба важнее: спрятанная пилюля возвращается.
         st(|s| s.shell.hidden = false);
@@ -176,7 +205,7 @@ pub unsafe fn hide(hwnd: HWND) {
         let next = if s.asks.is_empty() { None } else { Some(s.asks.remove(0)) };
         (had, next)
     });
-    hotkeys(hwnd, false);
+    hotkeys(hwnd, false, 0);
     match next {
         Some(p) => show(hwnd, p, None),
         None if had => layout(hwnd),
@@ -224,11 +253,31 @@ pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
         layout(hwnd);
         return Redraw::None;
     }
-    let (ask, aumid, can_always) = st(|s| match &s.peek {
-        Some(p @ Peek { kind: PeekKind::Ask { id, .. }, .. }) => (Some(id.clone()), String::new(), p.can_always),
-        Some(p) => (None, p.aumid.clone(), false),
-        None => (None, String::new(), false),
+    if let PeekHit::ModeOn = h {
+        let m = st(|s| match s.peek.as_ref().map(|p| &p.kind) {
+            Some(PeekKind::Mode(m)) => Some(*m),
+            _ => None,
+        });
+        hide(hwnd);
+        if let Some(m) = m {
+            crate::feat::modes::set(hwnd, m);
+        }
+        return Redraw::None;
+    }
+    let (ask, aumid, can_always, who, question) = st(|s| match &s.peek {
+        Some(p @ Peek { kind: PeekKind::Ask { id, .. }, .. }) => (Some(id.clone()), String::new(), p.can_always, p.app.clone(), p.question.clone()),
+        Some(p) => (None, p.aumid.clone(), false, String::new(), None),
+        None => (None, String::new(), false, String::new(), None),
     });
+    if let (Some(id), PeekHit::Pick(i)) = (&ask, h) {
+        // Ответ на вопрос: хук разрешает инструмент и отдаёт выбранный вариант.
+        if let Some(body) = question.as_ref().and_then(|q| crate::feat::agents::answer_json(q, i as usize)) {
+            crate::bg::api::answer_body(id, &body);
+            st(|s| s.agents.set_state(id, AgentState::Work));
+            hide(hwnd);
+        }
+        return Redraw::None;
+    }
     if let Some(id) = ask {
         // Без решения хук отпускается, и Claude Code спрашивает в своём окне.
         let decision = match h {
@@ -252,12 +301,17 @@ pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
         _ => {}
     }
     hide(hwnd);
+    // «В терминал»: заодно поднять окно агента, если найдётся.
+    if h == PeekHit::Dismiss && !who.is_empty() {
+        crate::sys::wnd::focus_titled(&who);
+    }
     Redraw::None
 }
 
 /// Горячая клавиша ответа (Alt+Y / A / N / T), пока просьба на экране.
 pub unsafe fn on_hotkey(hwnd: HWND, id: i32) {
     let hit = match id {
+        HOTKEY_PICK..=HOTKEY_PICK_LAST => PeekHit::Pick((id - HOTKEY_PICK) as u8),
         HOTKEY_ALLOW => PeekHit::Allow,
         HOTKEY_ALWAYS => PeekHit::Always,
         HOTKEY_DENY => PeekHit::Deny,

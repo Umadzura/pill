@@ -156,6 +156,45 @@ unsafe fn ask(p: &mut Painter, s: &State, pk: &Peek) {
     link(p, rx, by, if pk.more { "скрыть" } else { "подробнее" }, PeekHit::More);
 }
 
+/// Вопрос агента: маскот, «имя спрашивает», текст вопроса, варианты строками с номером клавиши.
+unsafe fn question(p: &mut Painter, s: &State, pk: &Peek, q: &crate::feat::agents::Question) {
+    let (left, right) = (p.s(20), p.s(W_ASK - 20));
+    if let Some(a) = s.agents.list.iter().find(|a| a.name == pk.app) {
+        super::mascot::draw(p, left, p.s(18), p.s(4), a, s.notif_flip);
+    }
+    let x = p.s(72);
+    let cap = RECT { left: x, top: p.s(14), right, bottom: p.s(32) };
+    let nw = p.measure(p.f.bold, &pk.title);
+    p.text(p.f.bold, &pk.title, cap, FG, DT_LEFT);
+    p.text(p.f.small, "спрашивает", RECT { left: x + nw + p.s(6), ..cap }, WARN, DT_LEFT);
+    p.text_wrap(p.f.normal, &q.text, RECT { left: x, top: p.s(34), right, bottom: p.s(74) }, FG);
+    let mut y = 84;
+    if pk.picks() == 0 && q.count > 1 {
+        let r = RECT { left, top: p.s(y), right, bottom: p.s(y + 24) };
+        p.text(p.f.small, &format!("Вопросов сразу {}: ответь в терминале", q.count), r, DIM, DT_LEFT);
+    }
+    for (i, label) in q.options.iter().enumerate().take(pk.picks()) {
+        let row = RECT { left, top: p.s(y), right, bottom: p.s(y + 34) };
+        let hit = Hit::Peek(PeekHit::Pick(i as u8));
+        p.fill(row, R_ROW, if p.hovered(hit) { HOVER } else { PANEL });
+        p.text(p.f.small, &format!("Alt {}", i + 1), RECT { left: row.left + p.s(12), right: row.left + p.s(52), ..row }, DIM, DT_LEFT);
+        p.text(p.f.normal, label, RECT { left: row.left + p.s(56), right: row.right - p.s(12), ..row }, FG, DT_LEFT | DT_END_ELLIPSIS);
+        p.hit(row, hit);
+        y += 40;
+    }
+    link(p, right, p.s(y + 2), "ответить своими словами в терминале · Alt T", PeekHit::Dismiss);
+}
+
+/// Предложение режима ПК: «Включить «Монтаж»?», что это даст, кнопки.
+unsafe fn mode_offer(p: &mut Painter, pk: &Peek) {
+    let (left, right) = (p.s(20), p.s(W - 20));
+    p.text(p.f.small, &format!("Открыт {}", pk.app), RECT { left, top: p.s(12), right, bottom: p.s(30) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.hero, &pk.title, RECT { left, top: p.s(30), right, bottom: p.s(60) }, FG, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.small, &pk.body, RECT { left, top: p.s(58), right, bottom: p.s(74) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
+    let bx = button(p, left, p.s(78), "Включить", "", PeekHit::ModeOn, true) + p.s(8);
+    button(p, bx, p.s(78), "Нет", "", PeekHit::Dismiss, false);
+}
+
 /// «Агент готов»: его маскот с улыбкой, крупно «notes готов», под ним сколько работал.
 /// Просьба без ответа (напоминание из уведомления Claude Code): значок, заголовок, текст.
 unsafe fn agent(p: &mut Painter, s: &State, pk: &Peek) {
@@ -184,7 +223,14 @@ pub unsafe fn draw(p: &mut Painter, s: &State) {
     let h = p.s(pk.height());
     if pk.answerable() {
         // У просьбы клик мимо кнопок ничего не делает: случайно отправить её в терминал нельзя.
-        ask(p, s, pk);
+        match &pk.question {
+            Some(q) => question(p, s, pk, q),
+            None => ask(p, s, pk),
+        }
+        return;
+    }
+    if let PeekKind::Mode(_) = pk.kind {
+        mode_offer(p, pk);
         return;
     }
     p.hit(RECT { left: 0, top: 0, right: p.s(pk.width()), bottom: h }, Hit::Peek(PeekHit::Dismiss));

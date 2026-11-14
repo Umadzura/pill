@@ -294,7 +294,7 @@ pub static QUEUE: std::sync::Mutex<Vec<Event>> = std::sync::Mutex::new(Vec::new(
 
 /// Системный звук события, если звуки включены в настройках. У просьбы и у «закончил» звуки разные.
 unsafe fn sound(kind: MESSAGEBOX_STYLE) {
-    if st(|s| s.settings.sound) {
+    if st(|s| s.settings.sounds_on()) {
         let _ = MessageBeep(kind);
     }
 }
@@ -355,15 +355,28 @@ pub unsafe fn on_events(hwnd: HWND) {
                     let branch = agents::read_branch(&cwd);
                     st(|s| s.agents.set_branch(&id, branch));
                 }
+                // Окно этого агента и так перед глазами: карточку не показываем (настройка skip_focused).
+                let focused = match &notice {
+                    Some(agents::Notice::Ask { name, .. } | agents::Notice::Done { name, .. }) => st(|s| s.settings.skip_focused) && crate::sys::wnd::title_has(&crate::sys::wnd::foreground_title(), name),
+                    _ => false,
+                };
                 match notice {
+                    Some(agents::Notice::Ask { answerable, .. }) if focused => {
+                        // Пусть спросит в своём окне: человек уже там.
+                        if answerable {
+                            crate::bg::api::answer(&id, None);
+                        }
+                    }
+                    Some(agents::Notice::Done { .. }) if focused => {}
                     Some(agents::Notice::Ask { name, text, answerable }) => {
                         let kind = PeekKind::Ask { id, answerable };
                         let mut pk = Peek::new(kind, "Claude Code".into(), format!("{}: нужно разрешение", name), text);
                         if answerable {
                             // Карточка с ответом: имя проекта, запрос человека, инструмент, строки кода, ветка.
-                            let got = st(|s| s.agents.list.iter().find(|a| a.name == name).map(|a| (a.note.clone(), a.tool.clone(), a.branch.clone().unwrap_or_default(), a.ask_lines.clone(), a.ask_stat, a.ask_always)));
-                            if let Some((note, tool, branch, lines, stat, always)) = got {
+                            let got = st(|s| s.agents.list.iter().find(|a| a.name == name).map(|a| (a.note.clone(), a.tool.clone(), a.branch.clone().unwrap_or_default(), a.ask_lines.clone(), a.ask_stat, a.ask_always, a.question.clone())));
+                            if let Some((note, tool, branch, lines, stat, always, question)) = got {
                                 pk.can_always = always;
+                                pk.question = question;
                                 pk.app = name.clone();
                                 pk.title = name.clone();
                                 pk.body = note;

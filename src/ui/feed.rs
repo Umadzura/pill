@@ -58,8 +58,8 @@ unsafe fn pages(p: &mut Painter, s: &State, w: i32, notif_count: usize) {
 /// и текущий инструмент, у закончившего — последний ответ.
 unsafe fn card(p: &mut Painter, s: &State, w: i32, y: i32, i: usize, a: &Agent, now: Instant) {
     let row = RECT { left: p.s(20), top: p.s(y), right: w - p.s(20), bottom: p.s(y + CARD_H) };
-    let hit = Hit::AgentDrop(i);
-    let hov = p.hovered(hit);
+    let (go, drop) = (Hit::AgentGo(i), Hit::AgentDrop(i));
+    let hov = p.hovered(go) || p.hovered(drop);
     let c = state_color(a.state);
     if a.state == AgentState::Ask {
         // Тому, кто ждёт разрешения, рамка цветом состояния.
@@ -113,7 +113,11 @@ unsafe fn card(p: &mut Painter, s: &State, w: i32, y: i32, i: usize, a: &Agent, 
             p.text(p.f.small, &format!("ты: {}", a.note), RECT { right: right - gap, ..low }, DIM, DT_LEFT | DT_END_ELLIPSIS);
         }
     }
-    p.hit(row, hit);
+    p.hit(row, go);
+    if hov {
+        // Крестик поверх карточки: убрать агента из списка.
+        p.hit(RECT { left: right - p.s(30), top: row.top, right: row.right, bottom: row.top + p.s(28) }, drop);
+    }
 }
 
 unsafe fn agents_page(p: &mut Painter, s: &State, w: i32, h: i32) {
