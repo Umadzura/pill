@@ -148,7 +148,6 @@ pub struct Snapshot {
     /// История памяти и видеокарты за ту же минуту, в процентах (у видеокарты пусто, если данных нет).
     pub ram_hist: VecDeque<f32>,
     pub gpu_hist: VecDeque<f32>,
-    pub ncpu: u32,
     pub ram: Option<(u64, u64)>,
     pub gpu: Option<f32>,
     /// Байт/с: принято, отправлено.
@@ -263,7 +262,6 @@ impl Sampler {
             cpu_hist: self.hist.clone(),
             ram_hist: self.ram_hist.clone(),
             gpu_hist: self.gpu_hist.clone(),
-            ncpu: self.ncpu,
             ram,
             gpu,
             net,

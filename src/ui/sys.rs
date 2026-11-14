@@ -1,5 +1,6 @@
-//! Вкладка «Монитор»: слева карточки 2×2 (ЦП, память, видеокарта, сеть) с историей за минуту и диск,
-//! справа топ приложений.
+//! Вкладка «Монитор»: четыре крупных числа (ЦП, память, видеокарта, сеть) с линией истории за минуту,
+//! под тонкой чертой процессы простым списком, внизу диск одной строкой. Без карточек: цвет
+//! появляется только при перегрузке.
 
 use std::collections::VecDeque;
 
@@ -11,18 +12,18 @@ use crate::app::State;
 use crate::feat::sysmon::{fmt_bytes, fmt_rate, Snapshot, HISTORY, SNAPSHOT};
 
 const WARN_AT: f32 = 85.0;
-/// Левая колонка: две карточки в ряд.
-const CARD_W: i32 = 144;
-const CARD_H: i32 = 116;
-const TOP: i32 = 56;
-/// Где начинается правая колонка.
-const RIGHT_X: i32 = 20 + 2 * CARD_W + 8 + 14;
+/// Верх содержимого страницы (под переключателем «Управление / Монитор»).
+const TOP: i32 = 54;
+const LEFT: i32 = 22;
+const COL_GAP: i32 = 20;
+/// Строка процесса.
+const ROW: i32 = 30;
 
 fn level_color(pct: f32) -> COLORREF {
     if pct >= WARN_AT {
         WARN
     } else {
-        ACCENT
+        FG
     }
 }
 
@@ -38,80 +39,97 @@ unsafe fn spark(p: &Painter, area: RECT, hist: &VecDeque<f32>) {
     }
 }
 
-/// Карточка: подпись, крупное значение, строка под ним и история (если есть).
-unsafe fn card(p: &Painter, i: i32, label: &str, value: &str, sub: &str, pct: Option<f32>, hist: Option<&VecDeque<f32>>) {
-    let x = 20 + (i % 2) * (CARD_W + 8);
-    let y = TOP + (i / 2) * (CARD_H + 8);
-    let r = p.r(x, y, x + CARD_W, y + CARD_H);
-    p.fill(r, R_TILE, PANEL);
-    let (l, rt) = (r.left + p.s(12), r.right - p.s(10));
-    p.text(p.f.small, label, RECT { left: l, top: r.top + p.s(6), right: rt, bottom: r.top + p.s(22) }, DIM, DT_LEFT);
-    let c = if pct.is_some_and(|v| v >= WARN_AT) { WARN } else { FG };
-    p.text(p.f.title, value, RECT { left: l, top: r.top + p.s(22), right: rt, bottom: r.top + p.s(46) }, c, DT_LEFT | DT_END_ELLIPSIS);
-    p.text(p.f.small, sub, RECT { left: l, top: r.top + p.s(46), right: rt, bottom: r.top + p.s(62) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
-    if let Some(h) = hist {
-        spark(p, RECT { left: l, top: r.top + p.s(66), right: rt, bottom: r.bottom - p.s(8) }, h);
+/// Одна колонка: подпись, крупное число с мелкой единицей, под ним линия истории или вторая строка.
+unsafe fn metric(p: &Painter, col: RECT, label: &str, value: &str, unit: &str, color: COLORREF, below: Below) {
+    p.text(p.f.small, label, RECT { top: p.s(TOP), bottom: p.s(TOP + 18), ..col }, DIM, DT_LEFT);
+    let vr = RECT { top: p.s(TOP + 20), bottom: p.s(TOP + 48), ..col };
+    let font = if value.chars().count() > 4 { p.f.title } else { p.f.hero };
+    let vw = p.measure(font, value);
+    p.text(font, value, vr, color, DT_LEFT);
+    p.text(p.f.small, unit, RECT { left: col.left + vw + p.s(3), top: vr.top + p.s(4), ..vr }, if color == FG { DIM } else { color }, DT_LEFT);
+    let low = RECT { top: p.s(TOP + 54), bottom: p.s(TOP + 78), ..col };
+    match below {
+        Below::Hist(h) => spark(p, low, h),
+        Below::Text(t) => p.text(p.f.small, &t, low, DIM, DT_LEFT | DT_END_ELLIPSIS),
+        Below::Nothing => {}
+    }
+}
+
+enum Below<'a> {
+    Hist(&'a VecDeque<f32>),
+    Text(String),
+    Nothing,
+}
+
+/// «2,4 МБ/с» → («2,4», «МБ/с»).
+fn split_unit(s: &str) -> (String, String) {
+    match s.rsplit_once(' ') {
+        Some((v, u)) => (v.to_string(), u.to_string()),
+        None => (s.to_string(), String::new()),
     }
 }
 
 pub unsafe fn draw(p: &mut Painter, _s: &State, w: i32) {
     let snap: Option<Snapshot> = SNAPSHOT.lock().unwrap().clone();
     let Some(sn) = snap else {
-        p.text(p.f.normal, "Собираю данные…", RECT { left: 0, top: p.s(120), right: w, bottom: p.s(160) }, DIM, DT_CENTER);
-        p.reach(160);
+        p.text(p.f.normal, "Собираю данные…", RECT { left: 0, top: p.s(90), right: w, bottom: p.s(120) }, DIM, DT_CENTER);
+        p.reach(130);
         return;
     };
+    let total = w - p.s(2 * LEFT);
+    let cw = (total - p.s(3 * COL_GAP)) / 4;
+    let col = |i: i32| {
+        let l = p.s(LEFT) + i * (cw + p.s(COL_GAP));
+        RECT { left: l, top: 0, right: l + cw, bottom: 0 }
+    };
 
-    card(p, 0, "Процессор", &format!("{:.0}%", sn.cpu), &format!("{} потоков", sn.ncpu), Some(sn.cpu), Some(&sn.cpu_hist));
+    metric(p, col(0), "Процессор", &format!("{:.0}", sn.cpu), "%", level_color(sn.cpu), Below::Hist(&sn.cpu_hist));
     match sn.ram {
         Some((used, total)) => {
             let pct = used as f32 * 100.0 / total.max(1) as f32;
-            card(p, 1, "Память", &format!("{:.0}%", pct), &format!("{} из {}", fmt_bytes(used), fmt_bytes(total)), Some(pct), Some(&sn.ram_hist));
+            metric(p, col(1), "Память", &format!("{:.0}", pct), "%", level_color(pct), Below::Hist(&sn.ram_hist));
         }
-        None => card(p, 1, "Память", "—", "", None, None),
+        None => metric(p, col(1), "Память", "—", "", FG, Below::Nothing),
     }
     match sn.gpu {
-        Some(g) => card(p, 2, "Видеокарта", &format!("{:.0}%", g), "самый занятый движок", Some(g), Some(&sn.gpu_hist)),
-        None => card(p, 2, "Видеокарта", "—", "нет данных", None, None),
+        Some(g) => metric(p, col(2), "Видеокарта", &format!("{:.0}", g), "%", level_color(g), Below::Hist(&sn.gpu_hist)),
+        None => metric(p, col(2), "Видеокарта", "—", "", FG, Below::Text("нет данных".into())),
     }
     match sn.net {
-        Some((rx, tx)) => card(p, 3, "Сеть", &format!("↓ {}", fmt_rate(rx)), &format!("↑ {}", fmt_rate(tx)), None, None),
-        None => card(p, 3, "Сеть", "—", "", None, None),
+        Some((rx, tx)) => {
+            let (v, u) = split_unit(&fmt_rate(rx));
+            metric(p, col(3), "Сеть", &format!("↓ {}", v), &u, FG, Below::Text(format!("↑ {}", fmt_rate(tx))));
+        }
+        None => metric(p, col(3), "Сеть", "—", "", FG, Below::Nothing),
     }
 
-    // Диск: одна строка под карточками.
+    // Тонкая черта, под ней процессы простым списком.
+    let line_y = TOP + 92;
+    p.fill(RECT { left: p.s(LEFT), top: p.s(line_y), right: w - p.s(LEFT), bottom: p.s(line_y) + p.s(1).max(1) }, 0, HOVER);
+    let (left, right) = (p.s(LEFT), w - p.s(LEFT));
+    let mut y = line_y + 8;
+    if sn.apps.is_empty() {
+        p.text(p.f.small, "…", RECT { left, top: p.s(y), right, bottom: p.s(y + ROW) }, DIM, DT_LEFT);
+        y += ROW;
+    }
+    for a in &sn.apps {
+        let row = RECT { left, top: p.s(y), right, bottom: p.s(y + ROW) };
+        y += ROW;
+        p.text(p.f.normal, &a.name, RECT { right: row.right - p.s(140), ..row }, FG, DT_LEFT | DT_END_ELLIPSIS);
+        let c = if a.cpu >= WARN_AT / 2.0 { WARN } else { FG };
+        p.text(p.f.normal, &format!("{:.1}%", a.cpu).replace('.', ","), RECT { right: row.right - p.s(72), ..row }, c, DT_RIGHT);
+        p.text(p.f.normal, &fmt_bytes(a.ram), row, DIM, DT_RIGHT);
+    }
+
+    // Диск одной тихой строкой внизу.
     let mut disk = String::new();
     if let Some((free, total)) = sn.disk {
-        disk = format!("Диск: свободно {} из {}", fmt_bytes(free), fmt_bytes(total));
+        disk = format!("Диск C: свободно {} из {}", fmt_bytes(free), fmt_bytes(total));
     }
     if let Some(rate) = sn.disk_rate {
         disk += &format!("  ·  {}", fmt_rate(rate));
     }
-    let dy = TOP + 2 * (CARD_H + 8);
-    let dr = p.r(20, dy, 20 + 2 * CARD_W + 8, dy + 26);
-    p.reach(dy + 26);
-    p.reach(TOP + 22 + sn.apps.len().max(1) as i32 * 30);
-    p.fill(dr, R_ROW, PANEL);
-    p.text(p.f.small, &disk, RECT { left: dr.left + p.s(12), right: dr.right - p.s(10), ..dr }, DIM, DT_LEFT | DT_END_ELLIPSIS);
-
-    // Топ приложений справа.
-    let (left, right) = (p.s(RIGHT_X), w - p.s(20));
-    let head = RECT { left, top: p.s(TOP), right, bottom: p.s(TOP + 18) };
-    p.text(p.f.small, "Больше всего грузят", head, DIM, DT_LEFT);
-    p.text(p.f.small, "ЦП · память", head, DIM, DT_RIGHT);
-    if sn.apps.is_empty() {
-        p.text(p.f.small, "…", RECT { top: p.s(TOP + 22), bottom: p.s(TOP + 46), ..head }, DIM, DT_LEFT);
-    }
-    for (i, a) in sn.apps.iter().enumerate() {
-        let y = TOP + 22 + i as i32 * 30;
-        let row = RECT { left, top: p.s(y), right, bottom: p.s(y + 28) };
-        if i % 2 == 0 {
-            p.fill(row, R_ROW, PANEL);
-        }
-        let name = RECT { left: row.left + p.s(10), right: row.right - p.s(124), ..row };
-        p.text(p.f.normal, &a.name, name, FG, DT_LEFT | DT_END_ELLIPSIS);
-        let c = if a.cpu >= WARN_AT / 2.0 { WARN } else { FG };
-        p.text(p.f.normal, &format!("{:.1}%", a.cpu).replace('.', ","), RECT { right: row.right - p.s(70), ..row }, c, DT_RIGHT);
-        p.text(p.f.normal, &fmt_bytes(a.ram), RECT { right: row.right - p.s(8), ..row }, DIM, DT_RIGHT);
-    }
+    let dr = RECT { left, top: p.s(y + 6), right, bottom: p.s(y + 24) };
+    p.text(p.f.small, &disk, dr, DIM, DT_LEFT | DT_END_ELLIPSIS);
+    p.reach(y + 24);
 }
