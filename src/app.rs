@@ -575,7 +575,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         }
         WM_HOTKEY => {
             match wparam.0 as i32 {
-                id @ (HOTKEY_ALLOW | HOTKEY_ALWAYS | HOTKEY_DENY | HOTKEY_TERM) => peek::on_hotkey(hwnd, id),
+                id @ (HOTKEY_ALLOW | HOTKEY_DENY | HOTKEY_TERM) => peek::on_hotkey(hwnd, id),
                 id @ HOTKEY_PICK..=HOTKEY_PICK_LAST => peek::on_hotkey(hwnd, id),
                 HOTKEY_HIDE => shell::toggle_hidden(hwnd),
                 HOTKEY_CLIP => input::on_hotkey(hwnd, cmd::MODE_CLIP),

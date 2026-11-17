@@ -7,7 +7,7 @@ use windows::Win32::Graphics::Gdi::*;
 
 use super::paint::*;
 use crate::app::{Hit, State};
-use crate::feat::peek::{Peek, PeekHit, PeekKind, W, W_ASK};
+use crate::feat::peek::{Peek, PeekHit, PeekKind, NOTE_H, W, W_ASK};
 
 /// Цвета добавленных и убранных строк.
 const ADDED: COLORREF = rgb(123, 228, 149);
@@ -89,12 +89,23 @@ unsafe fn notif(p: &mut Painter, pk: &Peek, h: i32) {
     }
 }
 
-/// Тихая ссылка-слово справа. Возвращает её левый край.
-unsafe fn link(p: &mut Painter, right: i32, top: i32, label: &str, hit: PeekHit) -> i32 {
+/// Неактивная кнопка: тусклая, без зоны клика. Возвращает правый край.
+unsafe fn button_off(p: &mut Painter, x: i32, top: i32, label: &str, key: &str) -> i32 {
+    let lw = p.measure(p.f.bold, label);
+    let kw = p.measure(p.f.small, key) + p.s(8);
+    let r = RECT { left: x, top, right: x + lw + kw + p.s(26), bottom: top + p.s(28) };
+    p.fill(r, R_PILL, PANEL);
+    p.text(p.f.bold, label, RECT { left: r.left + p.s(13), ..r }, FAINT, DT_LEFT);
+    p.text(p.f.small, key, RECT { right: r.right - p.s(12), ..r }, FAINT, DT_RIGHT);
+    r.right
+}
+
+/// Тихая ссылка-слово справа (`lit` — ярче обычного: на неё сейчас надо нажать). Возвращает её левый край.
+unsafe fn link(p: &mut Painter, right: i32, top: i32, label: &str, hit: PeekHit, lit: bool) -> i32 {
     let w = p.measure(p.f.small, label);
     let r = RECT { left: right - w, top, right, bottom: top + p.s(28) };
     let h = Hit::Peek(hit);
-    p.text(p.f.small, label, r, if p.hovered(h) { FG } else { DIM }, DT_RIGHT);
+    p.text(p.f.small, label, r, if lit || p.hovered(h) { FG } else { DIM }, DT_RIGHT);
     p.hit(RECT { left: r.left - p.s(4), right: r.right + p.s(4), ..r }, h);
     r.left
 }
@@ -121,39 +132,70 @@ unsafe fn ask(p: &mut Painter, s: &State, pk: &Peek) {
     p.text(p.f.hero, &hero, RECT { left: x, top: p.s(32), right, bottom: p.s(64) }, FG, DT_LEFT | DT_END_ELLIPSIS);
 
     let mut y = 78;
+    // Под целью: предупреждение о файле или почему «Разрешить» пока не нажать.
+    let note = RECT { left: x, top: p.s(62), right, bottom: p.s(62 + NOTE_H) };
+    if let Some(w) = pk.warning() {
+        // Путь сокращается в середине: имя файла видно всегда.
+        p.text(p.f.small, w, note, WARN, DT_LEFT | DT_PATH_ELLIPSIS);
+    } else if pk.blocked() {
+        let extra = pk.code().filter(|l| !l.starts_with('…')).count().saturating_sub(1);
+        let t = match extra {
+            0 => "команда длиннее, чем видно: открой «подробнее», чтобы разрешить".to_string(),
+            n => format!("+{} · открой «подробнее», чтобы разрешить", crate::feat::agents::lines_word(n)),
+        };
+        p.text(p.f.small, &t, note, DIM, DT_LEFT | DT_END_ELLIPSIS);
+    }
+    if pk.has_note() {
+        y += NOTE_H;
+    }
     if pk.more {
         if !pk.body.is_empty() {
             p.text(p.f.small, &format!("ты: {}", pk.body), RECT { left, top: p.s(y), right, bottom: p.s(y + 18) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
         }
         y += 22;
-        // Строки кода за тонкой чертой: убранные красным, добавленные зелёным, команда белым.
+        // Строки кода за тонкой чертой: убранные красным, добавленные зелёным, команда белым,
+        // пометка «показано не всё» серым.
         let ch = pk.code_height();
         if ch > 0 {
             p.fill(RECT { left, top: p.s(y), right: left + p.s(1).max(1), bottom: p.s(y + ch - 8) }, 0, HOVER);
-            for (i, l) in pk.lines.iter().enumerate() {
+            for (i, l) in pk.code().enumerate() {
                 let ly = y + i as i32 * 18;
                 let (mark, color) = match l.chars().next() {
                     Some('+') => ("+ ", ADDED),
                     Some('-') => ("− ", REMOVED),
+                    Some('…') => ("", DIM),
                     _ => ("", FG),
                 };
-                let text = format!("{}{}", mark, l.get(1..).unwrap_or(""));
+                let body = if l.starts_with('…') { l.as_str() } else { l.get(1..).unwrap_or("") };
+                let text = format!("{}{}", mark, body);
                 p.text(p.f.small, &text, RECT { left: left + p.s(12), top: p.s(ly), right, bottom: p.s(ly + 18) }, color, DT_LEFT | DT_END_ELLIPSIS);
             }
         }
-        y += ch + 12;
+        y += ch;
+        if pk.can_always {
+            // Что именно разрешит «всегда»: правило Claude Code как есть.
+            let rule = format!("«всегда» добавит правило: {}", pk.rule().unwrap_or("от Claude Code"));
+            p.text(p.f.small, &rule, RECT { left, top: p.s(y), right, bottom: p.s(y + 18) }, DIM, DT_LEFT | DT_END_ELLIPSIS);
+            y += 22;
+        }
+        y += 12;
     }
 
     let by = p.s(y);
-    let bx = button(p, left, by, "Разрешить", "Alt Y", PeekHit::Allow, true) + p.s(8);
+    let bx = (if pk.blocked() {
+        // Команду ещё не показали целиком: кнопка тусклая, Alt+Y не действует (`feat::peek::on_hit`).
+        button_off(p, left, by, "Разрешить", "Alt Y")
+    } else {
+        button(p, left, by, "Разрешить", "Alt Y", PeekHit::Allow, true)
+    }) + p.s(8);
     button(p, bx, by, "Нет", "Alt N", PeekHit::Deny, false);
-    // Справа тихие слова: в терминал, всегда (если можно), подробнее.
+    // Справа тихие слова: в терминал, всегда (только в «подробнее», рядом с правилом), подробнее.
     let mut rx = right;
-    rx = link(p, rx, by, "в терминал", PeekHit::Dismiss) - p.s(12);
-    if pk.can_always {
-        rx = link(p, rx, by, "всегда", PeekHit::Always) - p.s(12);
+    rx = link(p, rx, by, "в терминал", PeekHit::Dismiss, false) - p.s(12);
+    if pk.can_always && pk.more {
+        rx = link(p, rx, by, "всегда", PeekHit::Always, false) - p.s(12);
     }
-    link(p, rx, by, if pk.more { "скрыть" } else { "подробнее" }, PeekHit::More);
+    link(p, rx, by, if pk.more { "скрыть" } else { "подробнее" }, PeekHit::More, pk.blocked());
 }
 
 /// Вопрос агента: маскот, «имя спрашивает», текст вопроса, варианты строками с номером клавиши.
@@ -182,7 +224,7 @@ unsafe fn question(p: &mut Painter, s: &State, pk: &Peek, q: &crate::feat::agent
         p.hit(row, hit);
         y += 40;
     }
-    link(p, right, p.s(y + 2), "ответить своими словами в терминале · Alt T", PeekHit::Dismiss);
+    link(p, right, p.s(y + 2), "ответить своими словами в терминале · Alt T", PeekHit::Dismiss, false);
 }
 
 /// «Агент готов»: его маскот с улыбкой, крупно «notes готов», под ним сколько работал.

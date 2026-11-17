@@ -64,6 +64,7 @@ pub struct Extra {
     /// Последний ответ агента (если хук его прислал).
     pub answer: Option<String>,
     /// Просьба о разрешении: строки того, что хочет сделать инструмент, и сколько строк он добавляет и убирает.
+    /// Первый символ строки — её вид (см. `ask_detail`), «!» — предупреждение, «=» — правило «всегда».
     pub ask_lines: Vec<String>,
     pub ask_stat: (usize, usize),
     /// Просьба о разрешении: готовые правила «больше не спрашивать», как их прислал Claude Code
@@ -155,31 +156,140 @@ pub fn answer_json(q: &Question, pick: usize) -> Option<String> {
     Some(format!(r#"{{"hookSpecificOutput":{{"hookEventName":"PermissionRequest","decision":{{"behavior":"allow","updatedInput":{}}}}}}}"#, input))
 }
 
-/// Сколько строк кода показываем в карточке просьбы.
+/// Сколько строк правки показываем в карточке просьбы.
 const ASK_LINES: usize = 6;
+/// Строка правки длиннее обрезается с «…» в конце.
+const CODE_COLS: usize = 100;
+/// Команда переносится по столько символов (столько влезает в карточку мелким шрифтом)…
+const CMD_COLS: usize = 60;
+/// …и показывается не больше чем столькими строками.
+const CMD_ROWS: usize = 8;
+/// Отступ строки кода длиннее не показываем: длинным пробелом можно унести хвост за край карточки.
+const MAX_INDENT: usize = 16;
+
+/// Символ формата (категория Cf) или невидимый заполнитель: направление письма (U+202A–202E,
+/// U+2066–2069), нулевой ширины (U+200B–200F, U+2060–2064, U+FEFF) и прочие. Ими можно показать
+/// на карточке одно, а выполнить другое, поэтому из текста для человека их выкидываем.
+pub fn is_format(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x034F | 0x061C | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x180B..=0x180F | 0x3164 | 0xFFA0
+        | 0x0600..=0x0605 | 0x06DD | 0x070F | 0x0890 | 0x0891 | 0x08E2
+        | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0xFE00..=0xFE0F | 0xFEFF | 0xFFF9..=0xFFFB
+        | 0x110BD | 0x110CD | 0x13430..=0x1343F | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A
+        | 0xE0000..=0xE0FFF)
+}
+
+/// Строка кода для карточки: без управляющих и невидимых символов, табы — четыре пробела,
+/// отступ не длиннее `MAX_INDENT`, подряд идущие пробелы после отступа схлопнуты в один.
+fn code_line(s: &str) -> String {
+    let mut out = String::new();
+    let mut indent = 0;
+    let mut text = false;
+    let mut space = false;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if text {
+                space = true;
+            } else {
+                indent += if c == '\t' { 4 } else { 1 };
+            }
+            continue;
+        }
+        if c.is_control() || is_format(c) {
+            continue;
+        }
+        if !text {
+            out.extend(std::iter::repeat(' ').take(indent.min(MAX_INDENT)));
+            text = true;
+        }
+        if space {
+            out.push(' ');
+            space = false;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Не длиннее n символов; обрезанное кончается «…», чтобы было видно, что это не всё.
+pub fn cut(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    let mut o: String = s.chars().take(n.saturating_sub(1)).collect();
+    o.push('…');
+    o
+}
+
+/// «1 строка», «3 строки», «7 строк».
+pub fn lines_word(n: usize) -> String {
+    let w = match (n % 10, n % 100) {
+        (_, 11..=14) => "строк",
+        (1, _) => "строка",
+        (2..=4, _) => "строки",
+        _ => "строк",
+    };
+    format!("{} {}", n, w)
+}
 
 /// Что именно просит инструмент, по его параметрам: строки для карточки («-» убрано, «+» добавлено,
-/// пробел — команда как есть) и счётчики добавленных и убранных строк.
+/// пробел — команда, «…» — пометка, что показано не всё) и счётчики добавленных и убранных строк.
+/// Пометки «!» (предупреждение) и «=» (правило «всегда») добавляет `from_hook`. Чужой текст всегда
+/// идёт после «+», «-» или пробела, поэтому пометку не подделать.
 pub fn ask_detail(input: &HashMap<String, String>) -> (Vec<String>, (usize, usize)) {
-    let clip = |s: &str| -> String { s.replace('\t', "    ").chars().filter(|c| !c.is_control()).take(110).collect() };
+    let clip = |s: &str| cut(&code_line(s), CODE_COLS);
     let mut lines = Vec::new();
     let (mut plus, mut minus) = (0, 0);
     let (old, new) = (input.get("old_string"), input.get("new_string").or(input.get("content")));
     if old.is_some() || new.is_some() {
+        let mut hidden = 0;
         for l in old.map(|o| o.lines()).into_iter().flatten() {
             minus += 1;
             if lines.len() < ASK_LINES / 2 {
                 lines.push(format!("-{}", clip(l)));
+            } else {
+                hidden += 1;
             }
         }
         for l in new.map(|n| n.lines()).into_iter().flatten() {
             plus += 1;
             if lines.len() < ASK_LINES {
                 lines.push(format!("+{}", clip(l)));
+            } else {
+                hidden += 1;
             }
         }
+        if hidden > 0 {
+            lines.push(format!("…ещё {}", lines_word(hidden)));
+        }
     } else if let Some(c) = input.get("command") {
-        lines.extend(c.lines().take(ASK_LINES).map(|l| format!(" {}", clip(l))));
+        // Команда целиком, с переносом длинных строк: что не влезло, помечается.
+        let src: Vec<Vec<char>> = c.lines().map(code_line).filter(|l| !l.trim().is_empty()).map(|l| l.chars().collect()).collect();
+        let total: usize = src.iter().map(|l| l.len().div_ceil(CMD_COLS)).sum();
+        // Не влезло: последнюю строку отдаём под пометку.
+        let budget = if total > CMD_ROWS { CMD_ROWS - 1 } else { CMD_ROWS };
+        let (mut full, mut part) = (0, false);
+        for l in &src {
+            let room = budget - lines.len();
+            if room == 0 {
+                break;
+            }
+            lines.extend(l.chunks(CMD_COLS).take(room).map(|ch| format!(" {}", ch.iter().collect::<String>())));
+            if l.len().div_ceil(CMD_COLS) > room {
+                part = true;
+                break;
+            }
+            full += 1;
+        }
+        if total > CMD_ROWS {
+            // Строк, которых не видно совсем (частично показанная не в счёт).
+            let rest = src.len() - full - part as usize;
+            lines.push(match (part, rest) {
+                (true, 0) => "…обрезано".to_string(),
+                (true, n) => format!("…обрезано, ещё {}", lines_word(n)),
+                (false, n) => format!("…ещё {}", lines_word(n)),
+            });
+        }
     }
     (lines, (plus, minus))
 }
@@ -227,9 +337,32 @@ pub struct Agents {
     pub list: Vec<Agent>,
 }
 
-/// Одна строка без управляющих символов, не длиннее n.
+/// Одна строка без управляющих и невидимых символов (`is_format`), не длиннее n.
+/// Переводы строк и табы становятся пробелами, подряд идущие пробелы схлопываются в один.
 pub fn one_line(s: &str, n: usize) -> String {
-    s.trim().chars().map(|c| if c.is_whitespace() { ' ' } else { c }).filter(|c| !c.is_control()).take(n).collect()
+    let mut out = String::new();
+    let (mut len, mut space) = (0, false);
+    for c in s.chars() {
+        if c.is_whitespace() {
+            space = len > 0;
+            continue;
+        }
+        if c.is_control() || is_format(c) {
+            continue;
+        }
+        // Пробел ставим только перед следующим символом: в начале и в конце его не будет.
+        if len + space as usize >= n {
+            break;
+        }
+        if space {
+            out.push(' ');
+            len += 1;
+            space = false;
+        }
+        out.push(c);
+        len += 1;
+    }
+    out
 }
 
 impl Agents {
@@ -394,7 +527,7 @@ pub fn ask_phrase(tool: &str) -> (String, String) {
         let u = u.split("://").nth(1).unwrap_or(u);
         u.split('/').next().unwrap_or(u).trim_start_matches("www.").to_string()
     };
-    let short = |s: &str| one_line(s, 60);
+    let short = |s: &str| cut(&one_line(s, 200), 60);
     let (verb, target) = match name {
         "" => ("просит разрешение", String::new()),
         "Edit" | "MultiEdit" | "NotebookEdit" => ("хочет изменить файл", base(detail)),
@@ -410,6 +543,107 @@ pub fn ask_phrase(tool: &str) -> (String, String) {
         n => ("хочет использовать", n.to_string()),
     };
     (verb.to_string(), target)
+}
+
+/// Влезает ли текст в строку цели на карточке просьбы (крупный шрифт, ~430 логических px).
+/// Без GDI, поэтому с запасом: строчные латинские, цифры и знаки — одна доля, остальное шире.
+pub fn hero_fits(s: &str) -> bool {
+    let w: usize = s
+        .chars()
+        .map(|c| match c {
+            'm' | 'w' | 'M' | 'W' | '@' | '%' => 4,
+            c if c.is_ascii_lowercase() || c.is_ascii_digit() || c.is_ascii_punctuation() || c == ' ' => 2,
+            c if (c as u32) < 0x1100 => 3,
+            _ => 4,
+        })
+        .sum();
+    w <= 2 * 36
+}
+
+/// Путь без «.» и «..», через «\», в нижнем регистре (Windows регистр не различает).
+/// None — путь относительный.
+fn norm_path(p: &str) -> Option<String> {
+    let p = p.trim().replace('/', "\\");
+    let b = p.as_bytes();
+    // Корень: «C:», «\\сервер» (UNC) или просто «\» (путь в духе Unix).
+    let (root, rest) = if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+        (p[..2].to_string(), &p[2..])
+    } else if let Some(r) = p.strip_prefix("\\\\") {
+        ("\\".to_string(), r)
+    } else if p.starts_with('\\') {
+        (String::new(), &p[..])
+    } else {
+        return None;
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for c in rest.split('\\') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c),
+        }
+    }
+    Some(format!("{}\\{}", root, parts.join("\\")).to_lowercase())
+}
+
+/// Предупреждение для правки файла `path` агентом из папки `cwd`: это настройки Claude Code
+/// (в них разрешения и хуки) или файл вне папки проекта. `home` — папка пользователя (для «~»).
+pub fn path_note(path: &str, cwd: &str, home: &str) -> Option<String> {
+    let path = path.trim();
+    let path = match path.strip_prefix('~') {
+        Some(r) if !home.is_empty() => format!("{}{}", home, r),
+        _ => path.to_string(),
+    };
+    let full = norm_path(&path).or_else(|| norm_path(&format!("{}\\{}", cwd, path)))?;
+    let (dir, file) = full.rsplit_once('\\').unwrap_or(("", &full));
+    if matches!(file, "settings.json" | "settings.local.json") && dir.ends_with("\\.claude") {
+        let user = norm_path(home).is_some_and(|h| format!("{}\\.claude", h.trim_end_matches('\\')) == dir);
+        return Some(if user { format!("это твои настройки Claude Code: ~/.claude/{}", file) } else { format!("это настройки Claude Code: .claude/{}", file) });
+    }
+    let root = norm_path(cwd)?;
+    let root = root.trim_end_matches('\\');
+    if full != root && !full.starts_with(&format!("{}\\", root)) {
+        return Some(format!("файл вне папки проекта: {}", one_line(&path, 200)));
+    }
+    None
+}
+
+/// Правила «больше не спрашивать» из `permission_suggestions` словами: «Bash(npm test:*) · в этом проекте».
+pub fn rule_text(raw: &str) -> String {
+    let mut parts = Vec::new();
+    for item in json_items(raw) {
+        let (f, o) = json_fields(&item);
+        let list = |k: &str| o.get(k).map(|a| json_items(a)).unwrap_or_default();
+        let what = match f.get("type").map(String::as_str) {
+            Some("addRules" | "replaceRules") => list("rules")
+                .iter()
+                .map(|r| {
+                    let r = json_strings(r);
+                    let tool = r.get("toolName").cloned().unwrap_or_default();
+                    match r.get("ruleContent").filter(|c| !c.is_empty()) {
+                        Some(c) => format!("{}({})", tool, c),
+                        None => tool,
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            Some("setMode") => format!("режим {}", f.get("mode").cloned().unwrap_or_default()),
+            Some("addDirectories") => format!("доступ к {}", list("directories").join(", ")),
+            Some(t) => t.to_string(),
+            None => continue,
+        };
+        let dest = match f.get("destination").map(String::as_str) {
+            Some("userSettings") => "во всех проектах",
+            Some("projectSettings") => "в проекте",
+            Some("localSettings") => "в этом проекте",
+            Some("session") => "до конца сессии",
+            _ => "",
+        };
+        parts.push(if dest.is_empty() { what } else { format!("{} · {}", what, dest) });
+    }
+    one_line(&parts.join("; "), 300)
 }
 
 /// «работал меньше минуты», «работал 6 мин», «работал 1 ч 20 мин».
@@ -441,13 +675,29 @@ pub fn from_hook(json: &str) -> Option<Update> {
     let name = f.get("cwd").and_then(|c| c.rsplit(['/', '\\']).find(|p| !p.is_empty())).map(str::to_string);
     // «Bash: cargo build» — инструмент и главное из его параметров.
     let input = objs.get("tool_input").map(|o| json_strings(o)).unwrap_or_default();
-    let tool = f.get("tool_name").map(|tool| match ["command", "file_path", "url", "pattern", "description", "prompt"].iter().find_map(|k| input.get(*k)) {
-        // У команды в заголовке только первая строка: целиком она идёт в блок кода.
-        Some(d) => format!("{}: {}", tool, d.lines().next().unwrap_or("")),
+    let tool = f.get("tool_name").map(|tool| match ["command", "file_path", "notebook_path", "url", "pattern", "description", "prompt"].iter().find_map(|k| input.get(*k)) {
+        // У команды в заголовке только первая непустая строка: целиком она идёт в блок кода.
+        // Длинный путь — с конца, чтобы имя файла на карточке было настоящим.
+        Some(d) if input.contains_key("command") => format!("{}: {}", tool, d.lines().find(|l| !one_line(l, 1).is_empty()).unwrap_or("")),
+        Some(d) if d.chars().count() > 120 => format!("{}: …{}", tool, d.chars().skip(d.chars().count() - 119).collect::<String>()),
+        Some(d) => format!("{}: {}", tool, d),
         None => tool.clone(),
     });
-    let (ask_lines, ask_stat) = ask_detail(&input);
-    let extra = Extra { tool: tool.clone(), cwd: f.get("cwd").cloned(), answer: f.get("last_assistant_message").cloned(), ask_lines, ask_stat, suggestions: objs.get("permission_suggestions").filter(|s| s.starts_with('[') && s.len() > 2).cloned(), question: None };
+    let (mut ask_lines, ask_stat) = ask_detail(&input);
+    let suggestions = objs.get("permission_suggestions").filter(|s| s.starts_with('[') && s.len() > 2).cloned();
+    // Пометки для карточки: правка вне папки проекта или настроек Claude Code и правило «всегда».
+    if matches!(f.get("tool_name").map(String::as_str), Some("Edit" | "MultiEdit" | "Write" | "NotebookEdit")) {
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+        let path = input.get("file_path").or(input.get("notebook_path"));
+        if let Some(note) = path.and_then(|p| path_note(p, f.get("cwd").map(String::as_str).unwrap_or(""), &home)) {
+            ask_lines.insert(0, format!("!{}", note));
+        }
+    }
+    if let Some(s) = &suggestions {
+        let rule = rule_text(s);
+        ask_lines.push(format!("={}", if rule.is_empty() { "правило Claude Code".to_string() } else { rule }));
+    }
+    let extra = Extra { tool: tool.clone(), cwd: f.get("cwd").cloned(), answer: f.get("last_assistant_message").cloned(), ask_lines, ask_stat, suggestions, question: None };
     let mut extra = extra;
     if f.get("tool_name").map(String::as_str) == Some("AskUserQuestion") {
         extra.question = objs.get("tool_input").and_then(|r| parse_question(r));
@@ -643,9 +893,10 @@ mod tests {
         assert_eq!(stat, (3, 2));
         // Команда: как есть, без счётчиков.
         assert_eq!(ask_detail(&input(&[("command", "cargo build --release")])), (vec![" cargo build --release".to_string()], (0, 0)));
-        // Новый файл: только добавленные строки, не больше лимита.
+        // Новый файл: только добавленные строки, не больше лимита, и пометка, сколько не видно.
         let (lines, stat) = ask_detail(&input(&[("content", "1\n2\n3\n4\n5\n6\n7\n8")]));
-        assert_eq!((lines.len(), stat), (ASK_LINES, (8, 0)));
+        assert_eq!((lines.len(), stat), (ASK_LINES + 1, (8, 0)));
+        assert_eq!(lines.last().map(String::as_str), Some("…ещё 2 строки"));
 
         // Просьба из хука не затирает запрос человека и отдаёт в карточку инструмент.
         let now = Instant::now();
@@ -658,6 +909,92 @@ mod tests {
         // Claude Code прислал готовое правило: его можно вернуть как «всегда».
         let u = hook("PermissionRequest", r#","tool_name":"Bash","tool_input":{"command":"ls"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"ls"}],"behavior":"allow","destination":"localSettings"}]"#);
         assert_eq!(u.extra.suggestions.as_deref(), Some(r#"[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"ls"}],"behavior":"allow","destination":"localSettings"}]"#));
+    }
+
+    #[test]
+    fn honest_text() {
+        // Направление письма и символы нулевой ширины выкидываются: на карточке то, что выполнится.
+        assert_eq!(one_line("echo \u{202E}gnp.exe\u{202C} \u{2066}x\u{2069}", 40), "echo gnp.exe x");
+        assert_eq!(one_line("r\u{200B}m\u{200D} -\u{FEFF}rf\u{00AD} ~", 40), "rm -rf ~");
+        // Длинный пробел не уносит хвост команды за край карточки.
+        let long = format!("ls{};\trm -rf ~", " ".repeat(300));
+        assert_eq!(one_line(&long, 40), "ls ; rm -rf ~");
+        assert_eq!(one_line("  a \n\n b\t\tc  ", 40), "a b c");
+        // Обрезка не оставляет пробела в конце.
+        assert_eq!(one_line("abc def", 4), "abc");
+        assert_eq!(one_line("abc def", 5), "abc d");
+        // Строка кода: отступ сохраняется (не длиннее 16), пробелы внутри схлопываются.
+        assert_eq!(code_line("\t\tif x  {\u{202E}  y }"), "        if x { y }");
+        assert_eq!(code_line(&format!("{}x{}y", " ".repeat(200), " ".repeat(200))), format!("{}x y", " ".repeat(MAX_INDENT)));
+        assert_eq!(cut("abcdef", 4), "abc…");
+        assert_eq!(cut("abc", 4), "abc");
+        assert_eq!([1, 2, 5, 11, 21, 22, 112].map(lines_word), ["1 строка", "2 строки", "5 строк", "11 строк", "21 строка", "22 строки", "112 строк"]);
+    }
+
+    #[test]
+    fn command_rows() {
+        let cmd = |c: &str| ask_detail(&[("command".to_string(), c.to_string())].into_iter().collect()).0;
+        // Невидимые символы и длинные пробелы в команде.
+        assert_eq!(cmd("echo \u{202E}gnp.exe\u{200B}   &&\t\tdel x"), vec![" echo gnp.exe && del x"]);
+        // Длинная строка переносится, а не теряется.
+        assert_eq!(cmd(&"a".repeat(130)), vec![format!(" {}", "a".repeat(60)), format!(" {}", "a".repeat(60)), format!(" {}", "a".repeat(10))]);
+        // Пустые строки не занимают место.
+        assert_eq!(cmd("\n\nls\n   \npwd"), vec![" ls", " pwd"]);
+        // Строк больше, чем влезает: последняя под пометку.
+        let rows = cmd(&(1..=10).map(|i| format!("l{}", i)).collect::<Vec<_>>().join("\n"));
+        assert_eq!((rows.len(), rows[6].as_str(), rows[7].as_str()), (CMD_ROWS, " l7", "…ещё 3 строки"));
+        // Одна огромная строка: «обрезано».
+        let rows = cmd(&"b".repeat(600));
+        assert_eq!((rows.len(), rows[7].as_str()), (CMD_ROWS, "…обрезано"));
+        // Длинная строка в середине: обрезана она и не видно следующей.
+        let rows = cmd(&format!("1\n2\n3\n4\n5\n{}\n6", "c".repeat(300)));
+        assert_eq!((rows.len(), rows[6].len(), rows[7].as_str()), (CMD_ROWS, 61, "…обрезано, ещё 1 строка"));
+        // Влезает ровно: без пометки.
+        assert_eq!(cmd(&(1..=8).map(|i| i.to_string()).collect::<Vec<_>>().join("\n")).len(), CMD_ROWS);
+        // Цель на карточке: короткая влезает, длинная или с широкими буквами — нет.
+        assert!(hero_fits("cargo build --release"));
+        assert!(!hero_fits("cargo build --release --target x86_64-pc-windows-gnu"));
+        assert!(!hero_fits(&"W".repeat(20)));
+    }
+
+    #[test]
+    fn edit_paths() {
+        let home = "C:\\Users\\me";
+        let note = |p: &str, cwd: &str| path_note(p, cwd, home);
+        assert_eq!(note("C:\\p\\pill\\src\\a.rs", "C:\\p\\pill"), None);
+        // Регистр и косые черты не важны, относительный путь — от папки проекта.
+        assert_eq!(note("c:/P/Pill/src/a.rs", "C:\\p\\pill\\"), None);
+        assert_eq!(note("src/a.rs", "C:\\p\\pill"), None);
+        // Соседняя папка с тем же началом имени, «..» и относительный выход — вне проекта.
+        assert_eq!(note("C:\\p\\pill2\\a.rs", "C:\\p\\pill"), Some("файл вне папки проекта: C:\\p\\pill2\\a.rs".into()));
+        assert!(note("C:\\p\\pill\\..\\other\\a.rs", "C:\\p\\pill").is_some_and(|n| n.starts_with("файл вне папки проекта")));
+        assert!(note("src\\..\\..\\x.rs", "C:\\p\\pill").is_some());
+        assert!(note("D:\\x.rs", "C:\\p\\pill").is_some());
+        assert_eq!(note("C:\\x.rs", "C:\\"), None);
+        assert_eq!(note("/home/a/proj/x", "/home/a/proj"), None);
+        assert!(note("/etc/passwd", "/home/a/proj").is_some());
+        // Настройки Claude Code: пользователя (в них хуки и разрешения) и проекта.
+        assert_eq!(note("C:\\Users\\ME\\.claude\\settings.json", "C:\\p\\pill"), Some("это твои настройки Claude Code: ~/.claude/settings.json".into()));
+        assert_eq!(note("~/.claude/settings.json", "C:\\p\\pill"), Some("это твои настройки Claude Code: ~/.claude/settings.json".into()));
+        assert_eq!(note("C:\\p\\pill\\.claude\\settings.local.json", "C:\\p\\pill"), Some("это настройки Claude Code: .claude/settings.local.json".into()));
+        assert_eq!(note("C:\\p\\pill\\.claude\\agents\\x.md", "C:\\p\\pill"), None);
+        // Через хук: пометка первой строкой, правило «всегда» последней.
+        let u = from_hook(r#"{"session_id":"s","cwd":"C:\\p\\pill","hook_event_name":"PermissionRequest","tool_name":"Write","tool_input":{"file_path":"D:\\other\\x.txt","content":"hi"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Write","ruleContent":"D:\\other\\**"}],"behavior":"allow","destination":"localSettings"}]}"#).unwrap();
+        assert_eq!(u.extra.ask_lines, vec!["!файл вне папки проекта: D:\\other\\x.txt", "+hi", "=Write(D:\\other\\**) · в этом проекте"]);
+        // У команды в цели первая непустая строка, а не пустота.
+        let u = from_hook(r#"{"session_id":"s","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"\n  \nrm -rf x"}}"#).unwrap();
+        assert_eq!(u.extra.tool.as_deref(), Some("Bash: rm -rf x"));
+        // Длинный путь в инструменте — с конца: имя файла настоящее.
+        let long = format!("C:\\\\p\\\\pill\\\\{}\\\\main.rs", "d".repeat(200));
+        let u = from_hook(&format!(r#"{{"session_id":"s","cwd":"C:\\p\\pill","hook_event_name":"PermissionRequest","tool_name":"Edit","tool_input":{{"file_path":"{}"}}}}"#, long)).unwrap();
+        assert_eq!(ask_phrase(u.extra.tool.as_deref().unwrap()).1, "main.rs");
+    }
+
+    #[test]
+    fn rules() {
+        let r = r#"[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm test:*"},{"toolName":"Read"}],"behavior":"allow","destination":"userSettings"},{"type":"setMode","mode":"acceptEdits","destination":"session"},{"type":"addDirectories","directories":["D:\\x"],"destination":"session"}]"#;
+        assert_eq!(rule_text(r), "Bash(npm test:*), Read · во всех проектах; режим acceptEdits · до конца сессии; доступ к D:\\x · до конца сессии");
+        assert_eq!(rule_text("[]"), "");
     }
 
     #[test]

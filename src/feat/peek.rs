@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 use crate::app::{st, Redraw};
 use crate::feat::agents::AgentState;
-use crate::ids::{HOTKEY_ALLOW, HOTKEY_ALWAYS, HOTKEY_DENY, HOTKEY_PICK, HOTKEY_PICK_LAST, HOTKEY_TERM, TIMER_PEEK};
+use crate::ids::{HOTKEY_ALLOW, HOTKEY_DENY, HOTKEY_PICK, HOTKEY_PICK_LAST, HOTKEY_TERM, TIMER_PEEK};
 use crate::shell::layout;
 
 /// Ширина карточки уведомления и «агент закончил» (логические px).
@@ -20,6 +20,11 @@ pub const W: i32 = 440;
 pub const W_ASK: i32 = 520;
 /// На сколько кнопка «Тишина на час» выключает карточки уведомлений.
 const QUIET: Duration = Duration::from_secs(3600);
+/// Сколько после появления просьбы клавиши ответа не действуют: нажатие предназначалось не ей
+/// (печатали в другом окне или отвечали на прошлую просьбу, а следующая встала на её место).
+const ARM: Duration = Duration::from_millis(500);
+/// Строка под целью: предупреждение о файле или «команда длиннее, чем видно».
+pub const NOTE_H: i32 = 18;
 
 pub enum PeekKind {
     Notif,
@@ -37,7 +42,8 @@ pub struct Peek {
     pub title: String,
     pub body: String,
     /// Уведомление: последние сообщения чата (до трёх, старые сверху).
-    /// Просьба агента: строки того, что он хочет сделать («-» убрано, «+» добавлено, пробел — команда).
+    /// Просьба агента: строки того, что он хочет сделать («-» убрано, «+» добавлено, пробел — команда,
+    /// «…» — показано не всё), «!» — предупреждение, «=» — правило «всегда» (`agents::ask_detail`).
     pub lines: Vec<String>,
     /// Уведомление: сколько сообщений в чате.
     pub count: usize,
@@ -58,6 +64,8 @@ pub struct Peek {
     /// Снимок: PNG-файл и его миниатюра.
     pub file: String,
     pub art: Option<std::sync::Arc<crate::bg::winrt::Art>>,
+    /// Когда карточка появилась на экране (у просьбы из очереди — когда до неё дошла очередь).
+    pub shown: Instant,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -84,7 +92,33 @@ pub enum PeekHit {
 
 impl Peek {
     pub fn new(kind: PeekKind, app: String, title: String, body: String) -> Peek {
-        Peek { kind, app, title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false, more: false, question: None, file: String::new(), art: None }
+        Peek { kind, app, title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false, more: false, question: None, file: String::new(), art: None, shown: Instant::now() }
+    }
+    /// Просьба агента: строки кода и пометки «…» (без предупреждения и правила).
+    pub fn code(&self) -> impl Iterator<Item = &String> {
+        self.lines.iter().filter(|l| !l.starts_with(['!', '=']))
+    }
+    /// Просьба агента: предупреждение о файле (вне папки проекта, настройки Claude Code).
+    pub fn warning(&self) -> Option<&str> {
+        self.lines.iter().find_map(|l| l.strip_prefix('!'))
+    }
+    /// Просьба агента: что именно добавит «всегда».
+    pub fn rule(&self) -> Option<&str> {
+        self.lines.iter().find_map(|l| l.strip_prefix('='))
+    }
+    /// Команда не видна на карточке целиком (несколько строк или длинная): «Разрешить» и Alt+Y
+    /// не действуют, пока не раскрыто «подробнее».
+    pub fn needs_more(&self) -> bool {
+        let (name, detail) = self.tool.split_once(": ").unwrap_or((&self.tool, ""));
+        matches!(name, "Bash" | "PowerShell") && (self.code().count() > 1 || !crate::feat::agents::hero_fits(detail))
+    }
+    /// «Разрешить» сейчас нельзя: команду ещё не показали целиком.
+    pub fn blocked(&self) -> bool {
+        self.needs_more() && !self.more
+    }
+    /// Есть строка под целью (предупреждение или «открой подробнее»).
+    pub fn has_note(&self) -> bool {
+        self.warning().is_some() || self.blocked()
     }
     pub fn answerable(&self) -> bool {
         matches!(self.kind, PeekKind::Ask { answerable: true, .. })
@@ -98,10 +132,9 @@ impl Peek {
     }
     /// Высота блока со строками кода в просьбе агента (0 — показывать нечего).
     pub fn code_height(&self) -> i32 {
-        if self.lines.is_empty() {
-            0
-        } else {
-            self.lines.len() as i32 * 18 + 16
+        match self.code().count() {
+            0 => 0,
+            n => n as i32 * 18 + 16,
         }
     }
     /// Варианты, на которые можно ответить отсюда (пусто — вопроса нет или их несколько сразу).
@@ -123,12 +156,15 @@ impl Peek {
                 let text = if self.lines.len() > 1 { self.lines.len() as i32 * 20 } else { 40 };
                 38 + text + if self.hover { 50 } else { 12 }
             }
-            // Маскот и одна фраза, кнопки; в «подробнее» ещё запрос человека и строки кода.
+            // Маскот и одна фраза (под ней, может быть, предупреждение), кнопки; в «подробнее» ещё
+            // запрос человека, строки кода и правило «всегда».
             _ if self.answerable() => {
+                let note = if self.has_note() { NOTE_H } else { 0 };
                 if self.more {
-                    78 + 22 + self.code_height() + 12 + 28 + 16
+                    let rule = if self.can_always { 22 } else { 0 };
+                    78 + note + 22 + self.code_height() + rule + 12 + 28 + 16
                 } else {
-                    78 + 28 + 16
+                    78 + note + 28 + 16
                 }
             }
             PeekKind::Done => 78,
@@ -140,9 +176,10 @@ impl Peek {
 }
 
 /// Клавиши ответа живут только пока просьба на экране: Pill не берёт фокус, поэтому они глобальные.
-/// `picks` — сколько вариантов ответа: на них ещё Alt+1…4.
+/// `picks` — сколько вариантов ответа: на них ещё Alt+1…4. У «всегда» клавиши нет: оно добавляет
+/// правило навсегда, поэтому только кликом, рядом с самим правилом в «подробнее».
 unsafe fn hotkeys(hwnd: HWND, on: bool, picks: usize) {
-    let keys = [(HOTKEY_ALLOW, b'Y'), (HOTKEY_ALWAYS, b'A'), (HOTKEY_DENY, b'N'), (HOTKEY_TERM, b'T')];
+    let keys = [(HOTKEY_ALLOW, b'Y'), (HOTKEY_DENY, b'N'), (HOTKEY_TERM, b'T')];
     for (id, key) in keys {
         if on {
             let _ = RegisterHotKey(hwnd, id, MOD_ALT | MOD_NOREPEAT, key as u32);
@@ -187,6 +224,8 @@ pub unsafe fn show(hwnd: HWND, peek: Peek, ms: Option<u32>) {
             }
             return false;
         }
+        let mut peek = peek;
+        peek.shown = Instant::now();
         s.peek = Some(peek);
         s.hover = None;
         true
@@ -264,6 +303,10 @@ pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
         layout(hwnd);
         return Redraw::None;
     }
+    if matches!(h, PeekHit::Allow | PeekHit::Always) && st(|s| s.peek.as_ref().is_some_and(|p| p.answerable() && p.blocked())) {
+        // Команда видна не целиком: разрешить можно, только посмотрев её в «подробнее».
+        return Redraw::None;
+    }
     // Карточка сейчас уедет из-под курсора: сжимающееся окно не должно раскрыться панелью.
     // Только если курсор над окном (щелчок, а не Alt+Y), иначе «ушёл» не придёт и запрет не снимется.
     if crate::shell::cursor_inside(hwnd) {
@@ -326,16 +369,56 @@ pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
     Redraw::None
 }
 
-/// Горячая клавиша ответа (Alt+Y / A / N / T), пока просьба на экране.
+/// Горячая клавиша ответа (Alt+Y / N / T, Alt+1…4), пока просьба на экране.
+/// Первые `ARM` после появления карточки нажатия не принимаются.
 pub unsafe fn on_hotkey(hwnd: HWND, id: i32) {
     let hit = match id {
         HOTKEY_PICK..=HOTKEY_PICK_LAST => PeekHit::Pick((id - HOTKEY_PICK) as u8),
         HOTKEY_ALLOW => PeekHit::Allow,
-        HOTKEY_ALWAYS => PeekHit::Always,
         HOTKEY_DENY => PeekHit::Deny,
         _ => PeekHit::Dismiss,
     };
-    if st(|s| s.peek.as_ref().is_some_and(|p| p.answerable())) {
+    if st(|s| s.peek.as_ref().is_some_and(|p| p.answerable() && p.shown.elapsed() >= ARM)) {
         on_hit(hwnd, hit);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ask(tool: &str, lines: &[&str]) -> Peek {
+        let mut p = Peek::new(PeekKind::Ask { id: "s".into(), answerable: true }, "pill".into(), "pill".into(), String::new());
+        p.tool = tool.into();
+        p.lines = lines.iter().map(|l| l.to_string()).collect();
+        p
+    }
+
+    #[test]
+    fn whole_command_first() {
+        // Короткая команда видна целиком: разрешать можно сразу.
+        let p = ask("Bash: ls -la", &[" ls -la"]);
+        assert!(!p.needs_more() && !p.blocked() && !p.has_note());
+        assert_eq!(p.height(), 78 + 28 + 16);
+        // Несколько строк или длинная строка: сначала «подробнее».
+        let mut p = ask("Bash: cd x", &[" cd x", " rm -rf ~"]);
+        assert!(p.blocked() && p.has_note());
+        assert_eq!(p.height(), 78 + NOTE_H + 28 + 16);
+        p.more = true;
+        assert!(p.needs_more() && !p.blocked() && !p.has_note());
+        assert!(ask("PowerShell: Get-ChildItem -Recurse -Force C:\\Users | Remove-Item", &[" Get-ChildItem -Recurse -Force C:\\Users | Remove-Item"]).blocked());
+        // Правка файла: строки кода и так в «подробнее», кнопка не ждёт.
+        assert!(!ask("Edit: C:\\p\\a.rs", &["-a", "+b", "+c"]).needs_more());
+    }
+
+    #[test]
+    fn marks() {
+        let mut p = ask("Write: D:\\x.txt", &["!файл вне папки проекта: D:\\x.txt", "+hi", "…ещё 2 строки", "=Write(D:\\**)"]);
+        p.can_always = true;
+        assert_eq!((p.warning(), p.rule(), p.code().count()), (Some("файл вне папки проекта: D:\\x.txt"), Some("Write(D:\\**)"), 2));
+        assert_eq!(p.code_height(), 2 * 18 + 16);
+        assert_eq!(p.height(), 78 + NOTE_H + 28 + 16);
+        p.more = true;
+        assert_eq!(p.height(), 78 + NOTE_H + 22 + (2 * 18 + 16) + 22 + 12 + 28 + 16);
     }
 }
