@@ -52,7 +52,58 @@ pub struct Update {
     /// Хук ждёт решения человека: ответить можно из чёлки (PermissionRequest у Claude Code).
     pub answerable: bool,
     pub extra: Extra,
+    /// Что случилось с субагентом сессии (инструмент Agent у Claude Code).
+    pub sub: Option<SubEvent>,
+    /// Событие только про субагента: состояние, инструмент и запрос самой сессии не трогать.
+    pub sub_only: bool,
 }
+
+/// Событие субагента из хуков Claude Code (проба 23.0, 17.11: `agent_id` в `SubagentStart`
+/// совпадает с `agentId` в ответе инструмента Agent; инструменты внутри субагента и его просьбы
+/// о разрешении приходят с `agent_id` и `agent_type`, `session_id` у всех родительский).
+#[derive(Clone, PartialEq, Debug)]
+pub enum SubEvent {
+    /// Сессия зовёт Agent (PreToolUse без `agent_id`): описание задачи достанется следующему стартовавшему.
+    Spawn(String),
+    /// Agent вернул id субагента (PostToolUse по Agent): фоновый — сразу при запуске, обычный — в конце.
+    Named { id: String, task: String },
+    Start { id: String, kind: String },
+    /// Инструмент внутри субагента (или его просьба о разрешении).
+    Tool { id: String, kind: String, tool: String },
+    Stop { id: String },
+}
+
+/// Субагент сессии: «детка» у маскота и строка в «Событиях».
+#[derive(Clone, PartialEq, Debug)]
+pub struct Sub {
+    pub id: String,
+    /// Тип: «general-purpose», «Explore», имя своего агента.
+    pub kind: String,
+    /// Задача (description из вызова Agent). Пусто — не узнали.
+    pub task: String,
+    /// Чем занят: «Bash: cargo test».
+    pub tool: String,
+    /// Когда о нём последний раз слышали.
+    pub seen: Instant,
+    /// Закончил: ещё `SUB_KEEP` виден в «Событиях», в чёлке уже нет.
+    pub ended: Option<Instant>,
+}
+
+impl Sub {
+    /// Как назвать: задача, иначе тип.
+    pub fn label(&self) -> &str {
+        if self.task.is_empty() {
+            &self.kind
+        } else {
+            &self.task
+        }
+    }
+}
+
+const MAX_SUBS: usize = 8;
+const MAX_TASK: usize = 60;
+/// Сколько закончивший субагент ещё виден в «Событиях».
+const SUB_KEEP: Duration = Duration::from_secs(8);
 
 /// Подробности события для карточки сессии. Чего в событии нет, то None и остаётся прежним.
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -330,6 +381,86 @@ pub struct Agent {
     pub ask_always: bool,
     /// Последняя просьба — вопрос с вариантами.
     pub question: Option<Question>,
+    /// Субагенты сессии (работающие и недавно закончившие).
+    pub subs: Vec<Sub>,
+    /// Описания задач из вызовов Agent, чей субагент ещё не стартовал.
+    pending: Vec<String>,
+    /// Последнюю просьбу о разрешении прислал субагент: его задача или тип. Пусто — сама сессия.
+    pub ask_by: String,
+}
+
+impl Agent {
+    /// Сколько субагентов работает сейчас.
+    pub fn running(&self) -> usize {
+        self.subs.iter().filter(|s| s.ended.is_none()).count()
+    }
+    /// Агент занят: работает, просит разрешения или работают его субагенты (сама сессия могла
+    /// уже ответить и ждать человека, а фоновые продолжают).
+    pub fn busy(&self) -> bool {
+        matches!(self.state, AgentState::Work | AgentState::Ask) || self.running() > 0
+    }
+
+    fn sub_mut(&mut self, id: &str, now: Instant) -> &mut Sub {
+        if let Some(i) = self.subs.iter().position(|s| s.id == id) {
+            return &mut self.subs[i];
+        }
+        if self.subs.len() >= MAX_SUBS {
+            // Вытесняем закончившего, иначе самого давнего.
+            let old = self.subs.iter().position(|s| s.ended.is_some()).unwrap_or_else(|| (0..self.subs.len()).min_by_key(|&i| self.subs[i].seen).unwrap_or(0));
+            self.subs.remove(old);
+        }
+        self.subs.push(Sub { id: id.to_string(), kind: String::new(), task: String::new(), tool: String::new(), seen: now, ended: None });
+        self.subs.last_mut().unwrap()
+    }
+
+    fn on_sub(&mut self, ev: SubEvent, now: Instant) {
+        match ev {
+            SubEvent::Spawn(task) => {
+                self.pending.push(one_line(&task, MAX_TASK));
+                if self.pending.len() > MAX_SUBS {
+                    self.pending.remove(0);
+                }
+            }
+            SubEvent::Named { id, task } => {
+                let task = one_line(&task, MAX_TASK);
+                // Фоновый: Agent вернул id раньше старта, его описание из очереди больше не ждёт.
+                if let Some(i) = self.pending.iter().position(|t| *t == task) {
+                    self.pending.remove(i);
+                }
+                let s = self.sub_mut(&id, now);
+                s.seen = now;
+                if s.task.is_empty() {
+                    s.task = task;
+                }
+            }
+            SubEvent::Start { id, kind } => {
+                let fresh = !self.subs.iter().any(|s| s.id == id);
+                let task = if fresh && !self.pending.is_empty() { self.pending.remove(0) } else { String::new() };
+                let s = self.sub_mut(&id, now);
+                s.kind = one_line(&kind, MAX_NAME);
+                s.seen = now;
+                s.ended = None;
+                if s.task.is_empty() {
+                    s.task = task;
+                }
+            }
+            SubEvent::Tool { id, kind, tool } => {
+                let s = self.sub_mut(&id, now);
+                if s.kind.is_empty() {
+                    s.kind = one_line(&kind, MAX_NAME);
+                }
+                s.tool = one_line(&tool, MAX_NOTE);
+                s.seen = now;
+            }
+            // Внутренние агенты Claude Code (подсказки, /btw) без старта сюда не попадают.
+            SubEvent::Stop { id } => {
+                if let Some(s) = self.subs.iter_mut().find(|s| s.id == id) {
+                    s.ended = Some(now);
+                    s.tool.clear();
+                }
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -371,6 +502,16 @@ impl Agents {
         let pos = self.list.iter().position(|a| a.id == u.id);
         let prev = pos.map(|i| self.list[i].state);
         let id = u.id.clone();
+        let sub = u.sub.clone();
+        if u.sub_only {
+            // Субагент работает: сессия жива, но её состояние, инструмент и запрос те же.
+            // Неизвестную сессию не заводим: о ней скажет её собственное событие.
+            if let (Some(i), Some(ev)) = (pos, sub) {
+                self.list[i].updated = now;
+                self.list[i].on_sub(ev, now);
+            }
+            return None;
+        }
         if u.state == AgentState::Gone {
             if let Some(i) = pos {
                 self.list.remove(i);
@@ -409,7 +550,7 @@ impl Agents {
                         self.list.remove(old);
                     }
                 }
-                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, started: now, updated: now, tool: String::new(), answer: String::new(), branch: None, cwd: String::new(), ask_lines: Vec::new(), ask_stat: (0, 0), ask_always: false, question: None });
+                self.list.push(Agent { id: u.id, name: name.clone(), state: u.state, note: note.unwrap_or_default(), since: now, started: now, updated: now, tool: String::new(), answer: String::new(), branch: None, cwd: String::new(), ask_lines: Vec::new(), ask_stat: (0, 0), ask_always: false, question: None, subs: Vec::new(), pending: Vec::new(), ask_by: String::new() });
                 true
             }
         };
@@ -434,6 +575,18 @@ impl Agents {
                 a.ask_stat = extra.ask_stat;
                 a.ask_always = extra.suggestions.is_some();
                 a.question = extra.question.clone();
+                a.ask_by.clear();
+            }
+            if let Some(ev) = sub {
+                let asker = match (&ev, u.state) {
+                    (SubEvent::Tool { id, .. }, AgentState::Ask) => Some(id.clone()),
+                    _ => None,
+                };
+                a.on_sub(ev, now);
+                if let Some(sid) = asker {
+                    // Просьба пришла из субагента: на карточке «pill › его задача».
+                    a.ask_by = a.subs.iter().find(|s| s.id == sid).map(|s| s.label().to_string()).unwrap_or_default();
+                }
             }
         }
         // Что показать в карточке: у просьбы из хука — инструмент, иначе текст события.
@@ -487,19 +640,36 @@ impl Agents {
         idx
     }
 
-    /// Убрать тех, о ком давно не слышали. true — что-то пропало.
+    /// Убрать тех, о ком давно не слышали, и закончивших субагентов. true — что-то пропало.
     pub fn expire(&mut self, now: Instant) -> bool {
         let n = self.list.len();
         self.list.retain(|a| {
-            let limit = if a.state == AgentState::Work { WORK_STALE } else { IDLE_STALE };
+            let limit = if a.busy() { WORK_STALE } else { IDLE_STALE };
             now.duration_since(a.updated) < limit
         });
-        self.list.len() != n
+        let mut gone = self.list.len() != n;
+        for a in &mut self.list {
+            let before = a.subs.len();
+            // Закончивший виден ещё немного; молчащий полчаса субагент, скорее всего, убит.
+            a.subs.retain(|s| s.ended.map_or(now.duration_since(s.seen) < WORK_STALE, |t| now.duration_since(t) < SUB_KEEP));
+            gone |= a.subs.len() != before;
+        }
+        gone
     }
 
-    /// Для точки в свёрнутой чёлке: (кому-то нужно разрешение, сколько агентов работает или ждёт разрешения).
+    /// Кого показать стопкой в свёрнутой пилюле: сначала тех, кому нужно разрешение, потом работающих,
+    /// потом тех, кто сам уже ответил, но у кого ещё работают субагенты.
+    pub fn stack(&self) -> Vec<&Agent> {
+        let mut v: Vec<&Agent> = self.list.iter().filter(|a| a.state == AgentState::Ask).collect();
+        v.extend(self.list.iter().filter(|a| a.state == AgentState::Work));
+        v.extend(self.list.iter().filter(|a| !matches!(a.state, AgentState::Ask | AgentState::Work) && a.running() > 0));
+        v
+    }
+
+    /// Для точки в свёрнутой чёлке: (кому-то нужно разрешение, сколько агентов занято).
+    /// Занят и тот, кто сам уже ответил, но у кого работают субагенты.
     pub fn attention(&self) -> Option<(bool, usize)> {
-        let n = self.list.iter().filter(|a| matches!(a.state, AgentState::Work | AgentState::Ask)).count();
+        let n = self.list.iter().filter(|a| a.busy()).count();
         (n > 0).then(|| (self.list.iter().any(|a| a.state == AgentState::Ask), n))
     }
 }
@@ -702,12 +872,38 @@ pub fn from_hook(json: &str) -> Option<Update> {
     if f.get("tool_name").map(String::as_str) == Some("AskUserQuestion") {
         extra.question = objs.get("tool_input").and_then(|r| parse_question(r));
     }
-    let (state, note) = match f.get("hook_event_name")?.as_str() {
-        "UserPromptSubmit" => (AgentState::Work, f.get("prompt").cloned()),
+    let event = f.get("hook_event_name")?.as_str();
+    // Субагент: его события несут `agent_id` и `agent_type`, а `session_id` родительский.
+    let agent_id = f.get("agent_id").filter(|s| !s.is_empty()).cloned();
+    let kind = f.get("agent_type").cloned().unwrap_or_default();
+    let only = |ev: SubEvent| Some(Update { id: id.clone(), name: name.clone(), state: AgentState::Work, note: None, answerable: false, extra: Extra::default(), sub: Some(ev), sub_only: true });
+    match (event, agent_id.clone()) {
+        // Пустой тип у внутренних агентов Claude Code (подсказки, /btw): их не показываем.
+        ("SubagentStart", Some(a)) if !kind.is_empty() => return only(SubEvent::Start { id: a, kind }),
+        ("SubagentStop", Some(a)) => return only(SubEvent::Stop { id: a }),
+        ("PreToolUse" | "PostToolUse" | "PostToolUseFailure", Some(a)) => return only(SubEvent::Tool { id: a, kind, tool: tool.clone().unwrap_or_default() }),
+        _ => {}
+    }
+    // Вызов самого Agent из сессии: описание задачи (до старта) и id субагента (после).
+    let mut sub = None;
+    if f.get("tool_name").map(String::as_str) == Some("Agent") {
+        let task = input.get("description").cloned().unwrap_or_default();
+        let launched = objs.get("tool_response").map(|r| json_strings(r)).and_then(|r| r.get("agentId").cloned()).filter(|s| !s.is_empty());
+        sub = match (event, launched) {
+            ("PreToolUse", _) if !task.is_empty() => Some(SubEvent::Spawn(task)),
+            ("PostToolUse", Some(a)) => Some(SubEvent::Named { id: a, task }),
+            _ => None,
+        };
+    }
+    let (state, note) = match event {
+        // Фоновая задача закончилась: Claude Code подаёт это как запрос, но человек ничего не писал.
+        "UserPromptSubmit" => (AgentState::Work, f.get("prompt").filter(|p| !p.trim_start().starts_with("<task-notification>")).cloned()),
         "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => (AgentState::Work, None),
         "PermissionRequest" => {
             // Запрос человека (note) не трогаем: что просит инструмент, лежит в extra.
-            return Some(Update { id, name, state: AgentState::Ask, note: None, answerable: true, extra });
+            // Просит субагент — помечаем его, чтобы карточка сказала, кто именно.
+            let sub = agent_id.map(|a| SubEvent::Tool { id: a, kind, tool: tool.unwrap_or_default() });
+            return Some(Update { id, name, state: AgentState::Ask, note: None, answerable: true, extra, sub, sub_only: false });
         }
         "Notification" => match f.get("notification_type").map(String::as_str) {
             Some("permission_prompt") | Some("elicitation_dialog") => (AgentState::Ask, f.get("message").cloned()),
@@ -718,7 +914,7 @@ pub fn from_hook(json: &str) -> Option<Update> {
         "SessionEnd" => (AgentState::Gone, None),
         _ => return None,
     };
-    Some(Update { id, name, state, note, answerable: false, extra })
+    Some(Update { id, name, state, note, answerable: false, extra, sub, sub_only: false })
 }
 
 /// Строковые поля верхнего уровня JSON-объекта. Вложенные объекты и массивы пропускаются.
@@ -854,7 +1050,7 @@ mod tests {
     use super::*;
 
     fn up(id: &str, state: AgentState) -> Update {
-        Update { id: id.into(), name: Some("pill".into()), state, note: None, answerable: false, extra: Extra::default() }
+        Update { id: id.into(), name: Some("pill".into()), state, note: None, answerable: false, extra: Extra::default(), sub: None, sub_only: false }
     }
 
     #[test]
@@ -1015,7 +1211,7 @@ mod tests {
         a.apply(hook("UserPromptSubmit", r#","prompt":"ещё""#), now);
         assert!(a.list[0].tool.is_empty() && a.list[0].answer.is_empty() && a.list[0].branch.is_none());
         // Сначала тот, кому нужно разрешение.
-        a.apply(Update { id: "s2".into(), name: Some("site".into()), state: AgentState::Ask, note: None, answerable: false, extra: Extra::default() }, now);
+        a.apply(Update { id: "s2".into(), name: Some("site".into()), state: AgentState::Ask, note: None, answerable: false, extra: Extra::default(), sub: None, sub_only: false }, now);
         assert_eq!((a.order(), a.summary()), (vec![1, 0], (1, 1)));
     }
 
@@ -1037,7 +1233,7 @@ mod tests {
     #[test]
     fn hooks() {
         let u = from_hook(r#"{"session_id":"s1","transcript_path":"x","cwd":"C:\\Users\\me\\projects\\pill","hook_event_name":"UserPromptSubmit","prompt":"сделай\nкрасиво"}"#).unwrap();
-        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Work, note: Some("сделай\nкрасиво".into()), answerable: false, extra: u.extra.clone() });
+        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Work, note: Some("сделай\nкрасиво".into()), answerable: false, extra: u.extra.clone(), sub: None, sub_only: false });
         let ask = from_hook(r#"{"session_id":"s1","cwd":"/home/me/app/","hook_event_name":"Notification","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}"#).unwrap();
         assert_eq!((ask.name.as_deref(), ask.state), (Some("app"), AgentState::Ask));
         assert_eq!(from_hook(r#"{"session_id":"s1","hook_event_name":"Notification","notification_type":"idle_prompt"}"#).unwrap().state, AgentState::Wait);
@@ -1061,13 +1257,13 @@ mod tests {
         assert!(matches!(a.apply(up("s1", AgentState::Ask), now), Some(Notice::Ask { answerable: false, .. })));
         assert_eq!(a.apply(up("s1", AgentState::Ask), now), None);
         // Хук с ожиданием ответа показываем, даже если состояние то же.
-        let hook = Update { id: "s1".into(), name: None, state: AgentState::Ask, note: Some("Bash: ls".into()), answerable: true, extra: Extra::default() };
+        let hook = Update { id: "s1".into(), name: None, state: AgentState::Ask, note: Some("Bash: ls".into()), answerable: true, extra: Extra::default(), sub: None, sub_only: false };
         assert_eq!(a.apply(hook, now), Some(Notice::Ask { name: "pill".into(), text: "Bash: ls".into(), answerable: true }));
-        a.apply(Update { id: "s2".into(), name: Some("site".into()), state: AgentState::Work, note: Some(" запрос \n".into()), answerable: false, extra: Extra::default() }, now);
+        a.apply(Update { id: "s2".into(), name: Some("site".into()), state: AgentState::Work, note: Some(" запрос \n".into()), answerable: false, extra: Extra::default(), sub: None, sub_only: false }, now);
         assert_eq!(a.attention(), Some((true, 2)));
         assert_eq!(a.list[1].note, "запрос");
         // Событие без имени и заметки сохраняет старые; «ждёт ответа» молчит.
-        assert_eq!(a.apply(Update { id: "s2".into(), name: None, state: AgentState::Done, note: None, answerable: false, extra: Extra::default() }, now), Some(Notice::Done { name: "site".into(), text: "запрос".into(), secs: 0 }));
+        assert_eq!(a.apply(Update { id: "s2".into(), name: None, state: AgentState::Done, note: None, answerable: false, extra: Extra::default(), sub: None, sub_only: false }, now), Some(Notice::Done { name: "site".into(), text: "запрос".into(), secs: 0 }));
         assert_eq!(a.apply(up("s2", AgentState::Wait), now), None);
         // Разрешили в окне агента: карточку убрать.
         assert_eq!(a.apply(up("s1", AgentState::Work), now), Some(Notice::Resolved));
@@ -1086,7 +1282,7 @@ mod tests {
     #[test]
     fn permission_hook() {
         let u = from_hook(r#"{"session_id":"s1","cwd":"/p/pill","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"cargo build","description":"Сборка"}}"#).unwrap();
-        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Ask, note: None, answerable: true, extra: u.extra.clone() });
+        assert_eq!(u, Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Ask, note: None, answerable: true, extra: u.extra.clone(), sub: None, sub_only: false });
         let u = from_hook(r#"{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Mystery","tool_input":{"n":1}}"#).unwrap();
         // Инструмент без известных параметров: в карточке просто его имя.
         assert_eq!((u.note.as_deref(), u.extra.tool.as_deref()), (None, Some("Mystery")));
@@ -1105,5 +1301,58 @@ mod tests {
         assert_eq!(fmt_age(Duration::from_secs(5 * 60)), "5 мин");
         assert_eq!(fmt_age(Duration::from_secs(3 * 3600)), "3 ч");
     }
-}
 
+    /// Порядок событий как в пробе 23.0 (17.11, Claude Code 2.1.326).
+    #[test]
+    fn subagents() {
+        let now = Instant::now();
+        let mut a = Agents::default();
+        let hook = |ev: &str, rest: &str| from_hook(&format!(r#"{{"session_id":"s1","cwd":"C:\p\pill","hook_event_name":"{}"{}}}"#, ev, rest));
+        let go = |a: &mut Agents, ev: &str, rest: &str| a.apply(hook(ev, rest).expect(ev), now);
+        go(&mut a, "UserPromptSubmit", r#","prompt":"проверь""#);
+        // Обычный: описание до старта, инструменты с agent_id сессию не трогают.
+        go(&mut a, "PreToolUse", r#","tool_name":"Agent","tool_input":{"description":"тесты","subagent_type":"general-purpose"}"#);
+        go(&mut a, "SubagentStart", r#","agent_id":"aF","agent_type":"general-purpose""#);
+        // Фоновый: id приходит в ответе Agent раньше старта.
+        go(&mut a, "PreToolUse", r#","tool_name":"Agent","tool_input":{"description":"поиск","run_in_background":true}"#);
+        go(&mut a, "PostToolUse", r#","tool_name":"Agent","tool_input":{"description":"поиск"},"tool_response":{"status":"async_launched","agentId":"aB"}"#);
+        go(&mut a, "SubagentStart", r#","agent_id":"aB","agent_type":"Explore""#);
+        go(&mut a, "PostToolUse", r#","agent_id":"aF","agent_type":"general-purpose","tool_name":"Bash","tool_input":{"command":"cargo test"}"#);
+        let s = &a.list[0];
+        assert_eq!((s.state, s.tool.as_str(), s.note.as_str()), (AgentState::Work, "Agent: поиск", "проверь"));
+        let subs: Vec<(&str, &str, &str)> = s.subs.iter().map(|x| (x.id.as_str(), x.task.as_str(), x.tool.as_str())).collect();
+        assert_eq!(subs, vec![("aF", "тесты", "Bash: cargo test"), ("aB", "поиск", "")]);
+        assert_eq!(s.running(), 2);
+        // Просьба о разрешении из субагента: карточка знает, кто просит.
+        let n = go(&mut a, "PermissionRequest", r#","agent_id":"aF","agent_type":"general-purpose","tool_name":"Bash","tool_input":{"command":"mkdir x"}"#);
+        assert!(matches!(n, Some(Notice::Ask { answerable: true, .. })));
+        assert_eq!(a.list[0].ask_by, "тесты");
+        go(&mut a, "PostToolUse", r#","agent_id":"aF","agent_type":"general-purpose","tool_name":"Bash","tool_input":{"command":"mkdir x"}"#);
+        // Сессия ответила, фоновый ещё работает: она по-прежнему занята и видна в чёлке.
+        go(&mut a, "SubagentStop", r#","agent_id":"aF","agent_type":"general-purpose","last_assistant_message":"ок""#);
+        go(&mut a, "Stop", "");
+        assert_eq!((a.list[0].state, a.list[0].running()), (AgentState::Done, 1));
+        assert_eq!(a.attention(), Some((false, 1)));
+        // Окончание фоновой задачи приходит как «запрос», но человек ничего не писал.
+        let started = a.list[0].started;
+        go(&mut a, "UserPromptSubmit", r#","prompt":"<task-notification>\n<task-id>aB</task-id>""#);
+        assert_eq!((a.list[0].note.as_str(), a.list[0].started), ("проверь", started));
+        // Внутренний агент Claude Code: старт без типа и стоп без старта не показываются.
+        assert!(hook("SubagentStart", r#","agent_id":"ai","agent_type":"""#).is_none());
+        go(&mut a, "SubagentStop", r#","agent_id":"ai","agent_type":"""#);
+        go(&mut a, "SubagentStop", r#","agent_id":"aB","agent_type":"Explore""#);
+        assert!(a.list[0].subs.iter().all(|x| x.id != "ai"));
+        assert_eq!(a.list[0].running(), 0);
+        // После уведомления сессия разбирает результат, свободна она после следующего Stop.
+        assert_eq!(a.list[0].state, AgentState::Work);
+        go(&mut a, "Stop", "");
+        assert_eq!(a.attention(), None);
+        // Закончившие уходят через SUB_KEEP.
+        assert!(a.expire(now + SUB_KEEP + Duration::from_secs(1)));
+        assert!(a.list[0].subs.is_empty());
+        // Событие субагента незнакомой сессии её не заводит.
+        let mut b = Agents::default();
+        b.apply(hook("SubagentStart", r#","agent_id":"x","agent_type":"Explore""#).unwrap(), now);
+        assert!(b.list.is_empty());
+    }
+}

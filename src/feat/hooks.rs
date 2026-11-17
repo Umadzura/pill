@@ -10,7 +10,13 @@ use super::json::{parse, Json};
 /// По этой подстроке в команде хука узнаём свои записи.
 pub const MARK: &str = "127.0.0.1:47821/hook";
 /// События без ответа: хук работает в фоне и Claude Code не ждёт.
-const EVENTS: [&str; 5] = ["UserPromptSubmit", "PostToolUse", "Notification", "Stop", "SessionEnd"];
+/// `SubagentStart`/`SubagentStop` и `PreToolUse` по Agent — субагенты в чёлке (этап 23).
+const EVENTS: [&str; 8] = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SessionEnd", "SubagentStart", "SubagentStop"];
+/// У каких событий хук ставится не на всё, а по имени инструмента: `PreToolUse` нужен только
+/// для описания задачи субагента, на каждый инструмент его гонять незачем.
+fn matcher(e: &str) -> Option<&'static str> {
+    (e == "PreToolUse").then_some("Agent")
+}
 /// Запрос разрешения: хук ждёт ответа из пилюли, поэтому синхронный и с запасом по времени.
 const ASK: &str = "PermissionRequest";
 
@@ -67,14 +73,19 @@ pub fn strip(root: &mut Json) {
     }
 }
 
-fn group(cmd: &str, ask: bool) -> Json {
+fn group(cmd: &str, ask: bool, matcher: Option<&str>) -> Json {
     let mut h = vec![("type".to_string(), Json::Str("command".into())), ("command".to_string(), Json::Str(cmd.into()))];
     if ask {
         h.push(("timeout".to_string(), Json::Num("45".into())));
     } else {
         h.push(("async".to_string(), Json::Bool(true)));
     }
-    Json::Obj(vec![("hooks".to_string(), Json::Arr(vec![Json::Obj(h)]))])
+    let mut g = Vec::new();
+    if let Some(m) = matcher {
+        g.push(("matcher".to_string(), Json::Str(m.into())));
+    }
+    g.push(("hooks".to_string(), Json::Arr(vec![Json::Obj(h)])));
+    Json::Obj(g)
 }
 
 /// Поставить наши записи с ключом (старые свои сначала убираются, чтобы не было дублей).
@@ -83,7 +94,7 @@ pub fn install(root: &mut Json, key: &str) {
     let Some(events) = root.entry("hooks", Json::Obj(Vec::new())) else { return };
     for e in EVENTS.iter().chain([ASK].iter()) {
         if let Some(Json::Arr(gs)) = events.entry(e, Json::Arr(Vec::new())) {
-            gs.push(group(&command(key, *e == ASK), *e == ASK));
+            gs.push(group(&command(key, *e == ASK), *e == ASK, matcher(e)));
         }
     }
 }
@@ -171,9 +182,9 @@ mod tests {
         };
         assert_eq!(stop.len(), 2);
         assert!(v.dump().contains("echo mine"));
-        assert_eq!(v.dump().matches(MARK).count(), 6);
+        assert_eq!(v.dump().matches(MARK).count(), 9);
         // Ключ в каждой команде.
-        assert_eq!(v.dump().matches(&format!("-H X-Pill-Key:{} ", K)).count(), 6);
+        assert_eq!(v.dump().matches(&format!("-H X-Pill-Key:{} ", K)).count(), 9);
         // Синхронный хук разрешений с тайм-аутом.
         assert!(v.dump().contains("\"timeout\": 45"));
         strip(&mut v);
@@ -203,7 +214,9 @@ mod tests {
         let mut again = v_old.clone();
         install(&mut again, K);
         assert_eq!(state(&again, K), HookState::On);
-        assert_eq!(again.dump().matches(MARK).count(), 6);
+        assert_eq!(again.dump().matches(MARK).count(), 9);
+        // PreToolUse только по Agent: на каждый инструмент хук не гоняем.
+        assert!(again.dump().split_whitespace().collect::<String>().contains(r#""matcher":"Agent""#));
         assert!(!again.dump().contains(old));
         // Не на всех событиях — тоже переустановить.
         let mut part = v.clone();
@@ -214,7 +227,7 @@ mod tests {
         // Свой хук на лишнем событии (прежняя версия) — тоже.
         let mut more = v.clone();
         if let Some(Json::Obj(ev)) = more.entry("hooks", Json::Obj(vec![])) {
-            ev.push(("SubagentStop".into(), Json::Arr(vec![group(old, false)])));
+            ev.push(("PreCompact".into(), Json::Arr(vec![group(old, false, None)])));
         }
         assert_eq!(state(&more, K), HookState::Stale);
         install(&mut more, K);

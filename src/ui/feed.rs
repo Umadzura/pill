@@ -100,6 +100,16 @@ unsafe fn card(p: &mut Painter, s: &State, w: i32, y: i32, i: usize, a: &Agent, 
     if a.state == AgentState::Ask && !a.tool.is_empty() {
         let (verb, target) = crate::feat::agents::ask_phrase(&a.tool);
         p.text(p.f.small, &format!("{} {}", verb, target), low, WARN, DT_LEFT | DT_END_ELLIPSIS);
+    } else if a.running() > 0 {
+        // Работают субагенты: маленькие маскоты и кто чем занят («тесты — Bash: cargo test · Explore — Grep»).
+        let kx = super::mascot::kids(p, left, low.top + p.s(15), p.s(1).max(1), a, s.notif_flip, 3) + p.s(6);
+        let list: Vec<String> = a
+            .subs
+            .iter()
+            .filter(|x| x.ended.is_none())
+            .map(|x| if x.tool.is_empty() { x.label().to_string() } else { format!("{} — {}", x.label(), x.tool) })
+            .collect();
+        p.text(p.f.small, &list.join(" · "), RECT { left: kx, ..low }, FG, DT_LEFT | DT_END_ELLIPSIS);
     } else if done && !a.answer.is_empty() {
         p.text(p.f.small, &format!("ответ: {}", a.answer), low, DIM, DT_LEFT | DT_END_ELLIPSIS);
     } else {

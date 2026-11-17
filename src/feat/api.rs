@@ -216,7 +216,7 @@ fn handle_with(buf: &[u8], key: &str) -> (Reply, Option<Event>) {
             };
             let name = params.get("name").map(|s| clip(s.trim(), MAX_TITLE)).filter(|s| !s.is_empty());
             let note = params.get("text").map(|s| clip(s.trim(), MAX_TEXT)).filter(|s| !s.is_empty());
-            (OK, Some(Event::Agent(agents::Update { id, name, state, note, answerable: false, extra: agents::Extra::default() })))
+            (OK, Some(Event::Agent(agents::Update { id, name, state, note, answerable: false, extra: agents::Extra::default(), sub: None, sub_only: false })))
         }
         _ => (NOT_FOUND, None),
     }
@@ -434,12 +434,13 @@ pub unsafe fn on_events(hwnd: HWND) {
                         if answerable {
                             // Карточка с ответом: имя проекта, запрос человека, инструмент, строки кода, ветка.
                             // Агента ищем по id сессии: у двух папок с одним именем свои просьбы.
-                            let got = st(|s| s.agents.list.iter().find(|a| a.id == id).map(|a| (a.note.clone(), a.tool.clone(), a.branch.clone().unwrap_or_default(), a.ask_lines.clone(), a.ask_stat, a.ask_always, a.question.clone())));
-                            if let Some((note, tool, branch, lines, stat, always, question)) = got {
+                            let got = st(|s| s.agents.list.iter().find(|a| a.id == id).map(|a| (a.note.clone(), a.tool.clone(), a.branch.clone().unwrap_or_default(), a.ask_lines.clone(), a.ask_stat, a.ask_always, a.question.clone(), a.ask_by.clone())));
+                            if let Some((note, tool, branch, lines, stat, always, question, by)) = got {
                                 pk.can_always = always;
                                 pk.question = question;
                                 pk.app = name.clone();
-                                pk.title = name.clone();
+                                // Просит субагент: «pill › тесты хочет выполнить команду».
+                                pk.title = if by.is_empty() { name.clone() } else { format!("{} › {}", name, by) };
                                 pk.body = note;
                                 pk.tool = tool;
                                 pk.branch = branch;
@@ -535,7 +536,7 @@ mod tests {
         let raw = format!("POST /hook HTTP/1.1\r\nHost: 127.0.0.1:47821\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
         let (r, e) = req(&raw);
         assert_eq!((r.code, r.body), (200, ""));
-        assert_eq!(e, Some(Event::Agent(agents::Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Done, note: None, answerable: false, extra: agents::Extra { cwd: Some("C:\\p\\pill".into()), ..Default::default() } })));
+        assert_eq!(e, Some(Event::Agent(agents::Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Done, note: None, answerable: false, extra: agents::Extra { cwd: Some("C:\\p\\pill".into()), ..Default::default() }, sub: None, sub_only: false })));
         // Тело длиннее лимита: поля в начале всё равно читаются.
         let big = format!(r#"{{"session_id":"s2","hook_event_name":"UserPromptSubmit","prompt":"{}"#, "я".repeat(MAX_REQUEST));
         let raw = format!("POST /hook HTTP/1.1\r\nHost: localhost\r\n\r\n{}", big);
@@ -545,7 +546,7 @@ mod tests {
         // Неинтересное событие хука — молча ок.
         assert_eq!(req("POST /hook HTTP/1.1\r\nHost: localhost\r\n\r\n{\"session_id\":\"s\",\"hook_event_name\":\"SubagentStop\"}"), (QUIET, None));
         let (_, e) = req("GET /agent?id=a&name=bot&state=ask&text=%D0%BC%D0%BE%D0%B6%D0%BD%D0%BE%3F HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        assert_eq!(e, Some(Event::Agent(agents::Update { id: "a".into(), name: Some("bot".into()), state: AgentState::Ask, note: Some("можно?".into()), answerable: false, extra: agents::Extra::default() })));
+        assert_eq!(e, Some(Event::Agent(agents::Update { id: "a".into(), name: Some("bot".into()), state: AgentState::Ask, note: Some("можно?".into()), answerable: false, extra: agents::Extra::default(), sub: None, sub_only: false })));
         assert_eq!(req("GET /agent?name=bot HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 400);
         assert_eq!(req("GET /agent?id=a&state=zzz HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 400);
     }

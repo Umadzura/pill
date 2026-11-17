@@ -25,7 +25,8 @@ pub enum Lead {
     /// Мини-обложка играющего трека.
     Art,
     /// Маскот главного агента; число рядом, если агентов больше одного.
-    Mascot { count: usize },
+    /// `kids` — сколько субагентов у главного работает: маленькие маскоты справа от стопки.
+    Mascot { count: usize, kids: usize },
 }
 
 impl Lead {
@@ -35,7 +36,10 @@ impl Lead {
             Lead::Mic | Lead::Cam => DOT + 4,
             Lead::Art => ART + 10,
             // Стопка до трёх маскотов (каждый следующий сдвинут на STACK_DX) и «+N», если агентов больше.
-            Lead::Mascot { count } => MASCOT_W + (count.clamp(1, 3) as i32 - 1) * STACK_DX + 8 + if count > 3 { 16 } else { 0 },
+            // «Детки» (до трёх) по KID_DX каждая, «+N» за ними, если больше.
+            Lead::Mascot { count, kids } => {
+                MASCOT_W + (count.clamp(1, 3) as i32 - 1) * STACK_DX + 8 + if count > 3 { 16 } else { 0 } + kids.min(KIDS_MAX) as i32 * KID_DX + if kids > KIDS_MAX { 14 } else { 0 }
+            }
         }
     }
 }
@@ -81,6 +85,10 @@ impl View {
 
 /// Сдвиг следующего маскота в стопке (логические px).
 pub const STACK_DX: i32 = 9;
+/// «Детка»: маскот с пикселем 1 логический px (10 в ширину) и зазором 2.
+pub const KID_DX: i32 = 12;
+/// Сколько «деток» рисовать, остальные — «+N».
+pub const KIDS_MAX: usize = 3;
 
 /// Зазор между точками микрофона/камеры и следующим значком.
 pub const DOT_GAP: i32 = 4;
@@ -114,6 +122,8 @@ pub struct Facts {
     pub playing: bool,
     /// Сколько агентов работает или ждёт разрешения (None — никого).
     pub agents: Option<usize>,
+    /// Сколько субагентов работает у главного агента (первого в стопке).
+    pub kids: usize,
     /// Над пилюлей держат файл.
     pub drop: bool,
 }
@@ -159,7 +169,7 @@ pub fn assemble(f: Facts) -> View {
     }
     // Агент левее музыки: он важнее обложки.
     if let Some(count) = f.agents {
-        lead.push(Lead::Mascot { count });
+        lead.push(Lead::Mascot { count, kids: f.kids });
     }
     if f.art && f.playing {
         lead.push(Lead::Art);
@@ -183,6 +193,7 @@ pub fn view(s: &State) -> View {
         timer_left: s.timers.nearest_left(),
         battery: battery_short(s.osd.battery),
         agents: s.agents.attention().map(|(_, n)| n),
+        kids: s.agents.stack().first().map_or(0, |a| a.running()),
         task_bar: s.tasks.bar(),
         drop: s.shelf.over,
         ..Facts::default()
@@ -254,7 +265,7 @@ mod tests {
         });
         assert_eq!(v.text, format!("14:32   Рендер 45%   ⏱ {}  87%", fmt_dur(90)));
         assert_eq!(v.dim_from.map(|i| &v.text[i..]), Some("87%"));
-        assert_eq!(v.lead, vec![Lead::Mic, Lead::Mascot { count: 2 }, Lead::Art]);
+        assert_eq!(v.lead, vec![Lead::Mic, Lead::Mascot { count: 2, kids: 0 }, Lead::Art]);
         // точка + зазор, обложка, маскот с числом
         assert_eq!(v.left_width(), (DOT + 4) + DOT_GAP + (ART + 10) + (MASCOT_W + STACK_DX + 8));
         assert_eq!(v.right_width(), EQ_W + 10);

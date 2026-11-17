@@ -103,17 +103,26 @@ unsafe fn draw_left(p: &mut Painter, s: &State, lead: &[Lead], mut x: i32, mid: 
             // Маскот главного агента (кому нужно разрешение, иначе работающий), число — если их больше одного.
             // Стопка маскотов: главный (кому нужно разрешение, иначе работающий) впереди и ярко,
             // до двух следующих за ним тусклее; если агентов больше трёх — «+N».
-            Lead::Mascot { count } => {
+            // За стопкой — «детки»: работающие субагенты главного маленькими маскотами по низу.
+            Lead::Mascot { count, kids } => {
                 let px = p.s(2);
                 let y = mid - px * mascot::H / 2;
-                let stack = mascot::stack(&s.agents.list);
+                let stack = s.agents.stack();
                 let shown = stack.len().min(3);
                 for i in (0..shown).rev() {
                     let k = [1.0, 0.45, 0.22][i];
                     mascot::draw_faded(p, x + p.s(pill::STACK_DX) * i as i32, y, px, stack[i], s.notif_flip, k);
                 }
+                let mut tx = x + px * mascot::W + p.s(pill::STACK_DX) * (shown.max(1) as i32 - 1) + p.s(4);
+                if let (Some(front), true) = (stack.first(), kids > 0) {
+                    tx = mascot::kids(p, tx, y + px * mascot::H, p.s(1).max(1), front, s.notif_flip, pill::KIDS_MAX);
+                    if kids > pill::KIDS_MAX {
+                        let r = RECT { left: tx, top: 0, right: tx + p.s(14), bottom: mid * 2 };
+                        p.text(p.f.small, &format!("+{}", kids - pill::KIDS_MAX), r, DIM, DT_LEFT);
+                        tx += p.s(14);
+                    }
+                }
                 if count > 3 {
-                    let tx = x + px * mascot::W + p.s(pill::STACK_DX * 2 + 4);
                     let r = RECT { left: tx, top: 0, right: tx + p.s(18), bottom: mid * 2 };
                     p.text(p.f.small, &format!("+{}", count - 3), r, DIM, DT_LEFT);
                 }

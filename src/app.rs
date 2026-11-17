@@ -403,12 +403,13 @@ unsafe fn on_tick(hwnd: HWND) {
     // Два дешёвых счётчика для предупреждения о нагрузке — вне st().
     let (cpu, mem) = (sys::sysinfo::cpu_times(), sys::sysinfo::memory());
     let now = Instant::now();
-    let (beep, confirm_gone, load, poll) = st(|s| {
+    let (beep, confirm_gone, load, poll, agents_gone) = st(|s| {
         s.tasks.expire(now);
-        s.agents.expire(now);
+        // Пропал агент или закончивший субагент: у чёлки другая ширина («детки»).
+        let agents_gone = s.agents.expire(now);
         s.notif_flip = !s.notif_flip;
         // В полноэкранной игре пилюли не видно: уведомления дочитаем, когда вернёмся.
-        (s.timers.tick(now), s.ctl.tick(), s.load.tick(cpu, mem), s.notif_flip && s.shell.visible())
+        (s.timers.tick(now), s.ctl.tick(), s.load.tick(cpu, mem), s.notif_flip && s.shell.visible(), agents_gone)
     });
     if poll {
         notifs_poll();
@@ -436,7 +437,7 @@ unsafe fn on_tick(hwnd: HWND) {
         (pill::text(s) != s.shell.last_collapsed, s.shell.expanded, live, pulse)
     });
     // Пока играет музыка, раз в секунду двигаются прогресс и эквалайзер.
-    if changed {
+    if changed || agents_gone {
         shell::layout(hwnd);
     } else if (expanded && (live || confirm_gone)) || winrt::playing() || pulse {
         let _ = InvalidateRect(hwnd, None, false);

@@ -84,13 +84,30 @@ pub unsafe fn draw(p: &Painter, x: i32, y: i32, px: i32, a: &Agent, flip: bool) 
 
 /// То же, но притушенный к чёрному: k = 1 — как есть. Задние маскоты в стопке тусклее.
 pub unsafe fn draw_faded(p: &Painter, x: i32, y: i32, px: i32, a: &Agent, flip: bool, k: f32) {
+    sprite(p, x, y, px, &a.name, a.state, flip, k);
+}
+
+/// «Детки» сессии: работающие субагенты маленькими маскотами того же цвета, что родитель,
+/// в ряд слева направо, не больше `max`. Возвращает правый край ряда (x, если рисовать нечего).
+pub unsafe fn kids(p: &Painter, x: i32, bottom: i32, px: i32, a: &Agent, flip: bool, max: usize) -> i32 {
+    let mut x = x;
+    for (i, _) in a.subs.iter().filter(|s| s.ended.is_none()).take(max).enumerate() {
+        // Соседи бегают глазами вразнобой.
+        sprite(p, x, bottom - H * px, px, &a.name, AgentState::Work, flip ^ (i % 2 == 1), 1.0);
+        x += (W + 2) * px;
+    }
+    x
+}
+
+/// Спрайт по имени (цвет) и состоянию (лицо); k — притушить к чёрному, 1 — как есть.
+unsafe fn sprite(p: &Painter, x: i32, y: i32, px: i32, name: &str, state: AgentState, flip: bool, k: f32) {
     let fade = |c: COLORREF| {
         let ch = |sh: u32| ((((c.0 >> sh) & 0xFF) as f32 * k) as u32) << sh;
         COLORREF(ch(0) | ch(8) | ch(16))
     };
-    let body = body_color(&a.name);
+    let body = body_color(name);
     // Тот, кто ждёт человека или закончил, темнее: «не горит».
-    let body = if matches!(a.state, AgentState::Done | AgentState::Gone | AgentState::Wait) { dim(body) } else { body };
+    let body = if matches!(state, AgentState::Done | AgentState::Gone | AgentState::Wait) { dim(body) } else { body };
     for (row, line) in BODY.iter().enumerate() {
         let cols = line.as_bytes();
         let mut c = 0;
@@ -107,7 +124,7 @@ pub unsafe fn draw_faded(p: &Painter, x: i32, y: i32, px: i32, a: &Agent, flip: 
             fill_px(p, r, fade(body));
         }
     }
-    for (fx, fy, c) in face(a.state, flip) {
+    for (fx, fy, c) in face(state, flip) {
         fill_px(p, RECT { left: x + fx * px, top: y + fy * px, right: x + (fx + 1) * px, bottom: y + (fy + 1) * px }, fade(c));
     }
 }
@@ -123,9 +140,3 @@ unsafe fn fill_px(p: &Painter, r: RECT, c: COLORREF) {
     p.cv.fill_round(RECT { left: r.left + p.ox, top: r.top + p.oy, right: r.right + p.ox, bottom: r.bottom + p.oy }, 0, c);
 }
 
-/// Кого показать стопкой в свёрнутой пилюле: сначала тех, кому нужно разрешение, потом работающих.
-pub fn stack(list: &[Agent]) -> Vec<&Agent> {
-    let mut v: Vec<&Agent> = list.iter().filter(|a| a.state == AgentState::Ask).collect();
-    v.extend(list.iter().filter(|a| a.state == AgentState::Work));
-    v
-}
