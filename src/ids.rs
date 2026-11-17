@@ -35,6 +35,8 @@ pub const WM_APP_LAYOUT: u32 = WM_APP + 13;
 pub const WM_APP_DROP: u32 = WM_APP + 14;
 /// Воркер сделал миниатюры для полки (`winrt::THUMBS`).
 pub const WM_APP_THUMB: u32 = WM_APP + 15;
+/// Воркер записал снимок экрана из буфера в PNG и сделал миниатюру (`winrt::SNAP`).
+pub const WM_APP_SNAP: u32 = WM_APP + 16;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -51,7 +53,7 @@ pub const TIMER_PASTE: usize = 3;
 pub const TIMER_CTL: usize = 4;
 /// Разовый: убрать временную надпись (громкость, зарядка, предупреждения).
 pub const TIMER_FLASH: usize = 5;
-/// 250 мс, разовый: открыть выделение области, когда панель уже свернулась.
+/// 300 мс, разовый: открыть выделение области, когда панель уже свернулась (сворачивание 240 мс).
 pub const TIMER_SHOT: usize = 6;
 /// 15 мс, только пока идёт анимация раскрытия/сворачивания (~0,2 с), потом снимается.
 pub const TIMER_ANIM: usize = 7;

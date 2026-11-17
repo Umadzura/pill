@@ -104,6 +104,8 @@ pub struct State {
     pub viz_area: Option<ui::viz::VizArea>,
     pub clip: clip::History,
     pub shelf: crate::feat::shelf::Shelf,
+    /// Снимки экрана из буфера (кнопка «Скриншот», «Ножницы»).
+    pub snaps: crate::feat::snap::Snaps,
     pub cmd: cmd::CmdState,
     pub ctl: ctl::CtlState,
     pub timers: timers::Timers,
@@ -154,6 +156,7 @@ pub unsafe fn init_state() {
         viz_area: None,
         clip: clip::History::load(),
         shelf: crate::feat::shelf::Shelf::load(),
+        snaps: Default::default(),
         cmd: cmd::CmdState { apps: Vec::new(), freq: cmd::load_freq() },
         ctl: ctl::CtlState::default(),
         timers: timers::Timers::default(),
@@ -462,6 +465,11 @@ unsafe fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
         let _ = TrackMouseEvent(&mut tme);
     }
     if !st(|s| s.shell.expanded) {
+        // Панель только что свернули кнопкой «Скриншот»: курсор ещё над сжимающимся окном,
+        // раскрываться снова нельзя, пока он не уйдёт.
+        if st(|s| s.peek.is_none() && s.shell.no_hover.is_some_and(|t| Instant::now() < t)) {
+            return;
+        }
         // Над карточкой панель не раскрываем: на ней кнопки. Пока курсор на ней, она не прячется.
         if st(|s| s.peek.is_none()) {
             shell::set_expanded(hwnd, true);
@@ -484,6 +492,7 @@ unsafe fn on_mouse_move(hwnd: HWND, lparam: LPARAM) {
 unsafe fn on_mouse_leave(hwnd: HWND) {
     let active = st(|s| {
         s.shell.tracking = false;
+        s.shell.no_hover = None;
         s.hover = None;
         s.input.active
     });
@@ -511,6 +520,7 @@ unsafe fn on_timer(hwnd: HWND, id: usize) {
         TIMER_PASTE => input::on_paste_timer(hwnd),
         TIMER_SHOT => {
             let _ = KillTimer(hwnd, TIMER_SHOT);
+            crate::feat::snap::armed();
             sys::launch::open("ms-screenclip:", None);
         }
         TIMER_FLASH => {
@@ -572,11 +582,14 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
                 _ => input::on_hotkey(hwnd, cmd::MODE_ALL),
             }
         }
-        WM_CLIPBOARDUPDATE => {
-            if clip::on_update(hwnd) {
+        WM_CLIPBOARDUPDATE => match clip::on_update(hwnd) {
+            Some(true) => {
                 let _ = InvalidateRect(hwnd, None, false);
             }
-        }
+            Some(false) => {}
+            // Не текст: может быть снимок экрана.
+            None => crate::feat::snap::on_clipboard(hwnd),
+        },
         // Значок ♪ и точки микрофона/камеры меняют ширину пилюли.
         WM_APP_MEDIA => {
             shell::layout(hwnd);
@@ -590,6 +603,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         WM_APP_LAYOUT => shell::layout(hwnd),
         WM_APP_DROP => crate::feat::shelf::on_drop(hwnd, wparam.0),
         WM_APP_THUMB => crate::feat::shelf::on_thumbs(hwnd),
+        WM_APP_SNAP => crate::feat::snap::on_ready(hwnd),
         WM_APP_SYS => {
             let warn = sysmon::LOAD_WARN.lock().unwrap().take();
             if let Some(text) = warn {

@@ -190,13 +190,14 @@ pub unsafe fn on_hit(_hwnd: HWND, h: ClipHit) -> Redraw {
     }
 }
 
-/// Новое содержимое буфера Windows (WM_CLIPBOARDUPDATE). true — вкладка открыта, надо перерисовать.
-pub unsafe fn on_update(hwnd: HWND) -> bool {
-    let Some(text) = crate::sys::clipboard::read_text(hwnd) else { return false };
-    st(|s| {
+/// Новое содержимое буфера Windows (WM_CLIPBOARDUPDATE). Some(true) — вкладка открыта, надо перерисовать;
+/// None — в буфере не текст (или его просили не сохранять): может быть картинка.
+pub unsafe fn on_update(hwnd: HWND) -> Option<bool> {
+    let text = crate::sys::clipboard::read_text(hwnd)?;
+    Some(st(|s| {
         s.clip.add(text);
         s.shell.expanded && s.shell.tab == crate::app::Tab::Commands
-    })
+    }))
 }
 
 fn escape(s: &str) -> String {

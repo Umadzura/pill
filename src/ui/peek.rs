@@ -207,6 +207,28 @@ unsafe fn agent(p: &mut Painter, s: &State, pk: &Peek) {
     p.text(p.f.normal, &pk.body, p.r(x, 52, right, 74), DIM, DT_LEFT | DT_END_ELLIPSIS);
 }
 
+/// Снимок экрана: миниатюра слева (щелчок открывает), справа «Снимок экрана» и размер, ниже кнопки.
+unsafe fn snap(p: &mut Painter, pk: &Peek) {
+    let th = p.r(16, 16, 16 + 127, 16 + 74);
+    let open = Hit::Peek(PeekHit::Open);
+    match &pk.art {
+        Some(a) => p.art(th, a, 14),
+        None => {
+            p.fill(th, 14, PANEL);
+            p.text(p.f.small, "PNG", th, FAINT, DT_CENTER);
+        }
+    }
+    p.hit(th, open);
+    let (x, right) = (16 + 127 + 16, W - 16);
+    p.text(p.f.bold, &pk.title, p.r(x, 22, right, 44), FG, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.small, &pk.body, p.r(x, 46, right, 64), DIM, DT_LEFT | DT_END_ELLIPSIS);
+    p.text(p.f.small, "в буфере, можно вставлять", p.r(x, 64, right, 82), FAINT, DT_LEFT | DT_END_ELLIPSIS);
+    let y = p.s(16 + 74 + 14);
+    let mut bx = button(p, p.s(16), y, "Открыть", "", PeekHit::Open, true) + p.s(8);
+    bx = button(p, bx, y, "На полку", "", PeekHit::Shelf, false) + p.s(8);
+    button(p, bx, y, "Сохранить как", "", PeekHit::SaveAs, false);
+}
+
 pub unsafe fn draw(p: &mut Painter, s: &State) {
     // Карточку уже убрали, окно ещё сворачивается: рисовать нечего.
     let Some(pk) = &s.peek else { return };
@@ -222,6 +244,7 @@ pub unsafe fn draw(p: &mut Painter, s: &State) {
     p.hit(RECT { left: 0, top: 0, right: p.s(pk.width()), bottom: h }, Hit::Peek(PeekHit::Dismiss));
     match pk.kind {
         PeekKind::Notif => notif(p, pk, h),
+        PeekKind::Snap => snap(p, pk),
         _ => agent(p, s, pk),
     }
 }

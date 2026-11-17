@@ -17,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use crate::feat::notifs::{self, Notif};
 use crate::feat::sysmon::{self, Load, Sampler, WarnProbe};
-use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_NOTIF, WM_APP_RADIO, WM_APP_SYS, WM_APP_THUMB};
+use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_NOTIF, WM_APP_RADIO, WM_APP_SNAP, WM_APP_SYS, WM_APP_THUMB};
 use crate::sys::display::Displays;
 use crate::sys::toasts;
 
@@ -130,7 +130,22 @@ pub enum Job {
     NotifDrop(u32),
     /// Миниатюра картинки для полки (результат в `THUMBS`, сигнал `WM_APP_THUMB`).
     Thumb(String),
+    /// Снимок экрана из буфера: записать в PNG-файл и сделать миниатюру (результат в `SNAP`,
+    /// сигнал `WM_APP_SNAP`). `keep` — пути с полки: их при уборке старых снимков не трогаем.
+    Snap { image: crate::sys::clipboard::Image, keep: Vec<String> },
 }
+
+impl PartialEq for crate::sys::clipboard::Image {
+    // Пачку снимков не схлопываем: каждый новый.
+    fn eq(&self, _: &Self) -> bool {
+        false
+    }
+}
+
+/// Готовый снимок: путь к PNG, миниатюра и размер в пикселях (если декодировалась).
+pub static SNAP: Mutex<Option<(String, Option<(Art, u32, u32)>)>> = Mutex::new(None);
+/// Сколько последних снимков хранить в `%LOCALAPPDATA%\Pill\snips` (кроме лежащих на полке).
+const SNAPS_KEEP: usize = 20;
 
 /// Готовые миниатюры полки: путь, картинка и её размер в пикселях (None — не вышло).
 pub static THUMBS: Mutex<Vec<(String, Option<(Art, u32, u32)>)>> = Mutex::new(Vec::new());
@@ -344,6 +359,13 @@ fn worker(rx: mpsc::Receiver<Job>) {
                     THUMBS.lock().unwrap().push((path, t));
                     notify(WM_APP_THUMB);
                 }
+                Job::Snap { image, keep } => {
+                    if let Some(path) = save_snap(image, &keep) {
+                        let t = load_thumb(&path);
+                        *SNAP.lock().unwrap() = Some((path, t));
+                        notify(WM_APP_SNAP);
+                    }
+                }
                 Job::Notifs | Job::NotifDrop(_) => {
                     // Открываем один раз; нет доступа — больше не пробуем и UI перестаёт просить.
                     if listener.is_none() && !notifs::OFF.load(Ordering::Relaxed) {
@@ -488,6 +510,65 @@ fn pretty_app(id: &str) -> String {
     let s = s.strip_suffix(".exe").or_else(|| s.strip_suffix(".EXE")).unwrap_or(s);
     let s = s.rsplit('.').next().unwrap_or(s);
     s.to_string()
+}
+
+/// Записать снимок в `%LOCALAPPDATA%\Pill\snips\Снимок ГГГГ-ММ-ДД ЧЧ-ММ-СС.png` и убрать старые.
+fn save_snap(image: crate::sys::clipboard::Image, keep: &[String]) -> Option<String> {
+    use crate::sys::clipboard::{dib_to_bgra, Image};
+    let png = match image {
+        Image::Png(b) => b,
+        Image::Dib(d) => {
+            let (w, h, px) = dib_to_bgra(&d)?;
+            drop(d);
+            encode_png(w, h, &px)?
+        }
+    };
+    let base = std::env::var("LOCALAPPDATA").or_else(|_| std::env::var("TEMP")).ok()?;
+    let dir = std::path::PathBuf::from(base).join("Pill").join("snips");
+    std::fs::create_dir_all(&dir).ok()?;
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    let stem = format!("Снимок {:04}-{:02}-{:02} {:02}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    let mut path = dir.join(format!("{}.png", stem));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{} ({}).png", stem, n));
+        n += 1;
+    }
+    std::fs::write(&path, &png).ok()?;
+    prune_snaps(&dir, keep);
+    Some(path.to_string_lossy().into_owned())
+}
+
+/// Оставить в папке снимков `SNAPS_KEEP` свежих; лежащие на полке не трогаем.
+fn prune_snaps(dir: &std::path::Path, keep: &[String]) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("png")))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, p) in files.into_iter().skip(SNAPS_KEEP) {
+        let s = p.to_string_lossy();
+        if !keep.iter().any(|k| k.eq_ignore_ascii_case(&s)) {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+}
+
+/// BGRA (альфа не нужна) -> байты PNG через WinRT `BitmapEncoder`.
+fn encode_png(w: u32, h: u32, px: &[u8]) -> Option<Vec<u8>> {
+    use windows::Storage::Streams::{DataReader, InMemoryRandomAccessStream};
+    let stream = InMemoryRandomAccessStream::new().ok()?;
+    let enc = BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId().ok()?, &stream).ok()?.get().ok()?;
+    enc.SetPixelData(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Ignore, w, h, 96.0, 96.0, px).ok()?;
+    enc.FlushAsync().ok()?.get().ok()?;
+    let size = stream.Size().ok()? as u32;
+    let rd = DataReader::CreateDataReader(&stream.GetInputStreamAt(0).ok()?).ok()?;
+    rd.LoadAsync(size).ok()?.get().ok()?;
+    let mut out = vec![0u8; size as usize];
+    rd.ReadBytes(&mut out).ok()?;
+    Some(out)
 }
 
 /// Картинка с диска, обрезанная по центру под плитку полки. Файл читается в память целиком.

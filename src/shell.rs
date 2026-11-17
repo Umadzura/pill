@@ -132,6 +132,9 @@ pub struct Shell {
     hires: bool,
     /// Пилюлю спрятали сочетанием клавиш (Ctrl+Alt+H), чтобы достать то, что под ней.
     pub hidden: bool,
+    /// Панель свернули кнопкой «Скриншот»: до этого момента (или пока курсор не уйдёт)
+    /// наведение её не раскрывает, иначе она висит поверх выделения области.
+    pub no_hover: Option<std::time::Instant>,
 }
 
 impl Shell {
@@ -151,6 +154,7 @@ impl Shell {
             fullscreen: false,
             fs_miss: 0,
             hidden: false,
+            no_hover: None,
             hires: false,
             leave_pending: false,
             panel_h: EXPANDED_H,
@@ -364,6 +368,12 @@ pub unsafe fn cursor_inside(hwnd: HWND) -> bool {
     let _ = GetCursorPos(&mut pt);
     let _ = GetWindowRect(hwnd, &mut rc);
     pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom
+}
+
+/// Окно вот-вот сожмётся под неподвижным курсором (свернули кнопкой, убрали карточку):
+/// не раскрываться от наведения, пока курсор не уйдёт (но не дольше 10 с).
+pub fn hold_hover() {
+    st(|s| s.shell.no_hover = Some(std::time::Instant::now() + std::time::Duration::from_secs(10)));
 }
 
 pub unsafe fn schedule_collapse(hwnd: HWND) {

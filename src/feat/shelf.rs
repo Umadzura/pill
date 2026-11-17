@@ -187,33 +187,39 @@ pub unsafe fn on_drop(hwnd: HWND, what: usize) {
         }
         _ => {
             let paths = std::mem::take(&mut *sys::dragdrop::DROPPED.lock().unwrap());
-            let items: Vec<Item> = paths.iter().filter_map(|p| Item::probe(p)).collect();
-            let first = items.first().map(|i| i.name.clone());
-            let (n, text, expanded) = st(|s| {
-                s.shelf.over = false;
-                let n = s.shelf.add(items);
-                // Следующее раскрытие покажет полку (если не идёт поиск).
-                if n > 0 && !s.input.active {
-                    s.shell.tab = Tab::Shelf;
-                }
-                (n, s.shelf.serialize(), s.shell.expanded)
-            });
-            if n == 0 {
-                crate::shell::layout(hwnd);
-                return;
-            }
-            save(text);
-            request_thumbs();
-            if expanded {
-                crate::shell::layout(hwnd);
-            } else {
-                let msg = match (n, first) {
-                    (1, Some(name)) => format!("На полке: {}", name),
-                    _ => format!("На полке: {} файла", n),
-                };
-                crate::feat::osd::show(hwnd, crate::feat::osd::Flash::Text(msg, false), 2000);
-            }
+            st(|s| s.shelf.over = false);
+            add_paths(hwnd, paths);
         }
+    }
+}
+
+/// Положить файлы на полку (бросок, кнопка «На полку» у снимка): записать список, попросить
+/// миниатюры; свёрнутой пилюлей сказать «На полке: имя». Читает метаданные: вне `st()`.
+pub unsafe fn add_paths(hwnd: HWND, paths: Vec<String>) {
+    let items: Vec<Item> = paths.iter().filter_map(|p| Item::probe(p)).collect();
+    let first = items.first().map(|i| i.name.clone());
+    let (n, text, expanded) = st(|s| {
+        let n = s.shelf.add(items);
+        // Следующее раскрытие покажет полку (если не идёт поиск).
+        if n > 0 && !s.input.active {
+            s.shell.tab = Tab::Shelf;
+        }
+        (n, s.shelf.serialize(), s.shell.expanded)
+    });
+    if n == 0 {
+        crate::shell::layout(hwnd);
+        return;
+    }
+    save(text);
+    request_thumbs();
+    if expanded {
+        crate::shell::layout(hwnd);
+    } else {
+        let msg = match (n, first) {
+            (1, Some(name)) => format!("На полке: {}", name),
+            _ => format!("На полке: {} файла", n),
+        };
+        crate::feat::osd::show(hwnd, crate::feat::osd::Flash::Text(msg, false), 2000);
     }
 }
 

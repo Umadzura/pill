@@ -15,6 +15,7 @@ pub mod osd;
 pub mod peek;
 pub mod settings;
 pub mod shelf;
+pub mod snap;
 pub mod sysmon;
 pub mod timers;
 pub mod viz;

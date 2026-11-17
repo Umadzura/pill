@@ -164,8 +164,10 @@ unsafe fn toggle(hwnd: HWND, c: Ctl) -> Redraw {
         Ctl::Mute => sys::audio::toggle_mute(),
         Ctl::Shot => {
             // Сначала сворачиваемся, чтобы панель не попала в кадр, потом открываем выделение области.
+            // Курсор при этом ещё над окном: без `no_hover` первое же движение мыши раскрыло бы панель снова.
+            crate::shell::hold_hover();
             close_panel(hwnd, true);
-            SetTimer(hwnd, TIMER_SHOT, 250, None);
+            SetTimer(hwnd, TIMER_SHOT, 300, None);
             return Redraw::None;
         }
     }

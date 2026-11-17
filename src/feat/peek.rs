@@ -26,6 +26,8 @@ pub enum PeekKind {
     /// Агент ждёт разрешения. answerable — хук держит соединение, ответить можно прямо отсюда.
     Ask { id: String, answerable: bool },
     Done,
+    /// Снимок экрана из буфера: миниатюра, «Открыть», «На полку», «Сохранить как».
+    Snap,
 }
 
 pub struct Peek {
@@ -53,6 +55,9 @@ pub struct Peek {
     pub more: bool,
     /// Вопрос агента с вариантами вместо просьбы о разрешении.
     pub question: Option<crate::feat::agents::Question>,
+    /// Снимок: PNG-файл и его миниатюра.
+    pub file: String,
+    pub art: Option<std::sync::Arc<crate::bg::winrt::Art>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -71,11 +76,15 @@ pub enum PeekHit {
     More,
     /// Вопрос агента: выбран вариант.
     Pick(u8),
+    /// Снимок: положить на полку.
+    Shelf,
+    /// Снимок: сохранить копию куда-нибудь.
+    SaveAs,
 }
 
 impl Peek {
     pub fn new(kind: PeekKind, app: String, title: String, body: String) -> Peek {
-        Peek { kind, app, title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false, more: false, question: None }
+        Peek { kind, app, title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false, more: false, question: None, file: String::new(), art: None }
     }
     pub fn answerable(&self) -> bool {
         matches!(self.kind, PeekKind::Ask { answerable: true, .. })
@@ -123,6 +132,8 @@ impl Peek {
                 }
             }
             PeekKind::Done => 78,
+            // Миниатюра с подписью, под ней ряд кнопок.
+            PeekKind::Snap => 16 + 74 + 14 + 28 + 16,
             _ => 86,
         }
     }
@@ -164,7 +175,12 @@ pub unsafe fn show(hwnd: HWND, peek: Peek, ms: Option<u32>) {
     let ask = peek.answerable();
     let picks = peek.picks();
     let shown = st(|s| {
+        // Свежий снимок уведомление тоже не перебивает (тост «Ножниц» «Снимок скопирован» приходит следом).
+        let snap = s.peek.as_ref().is_some_and(|p| matches!(p.kind, PeekKind::Snap)) && matches!(peek.kind, PeekKind::Notif);
         let busy = s.peek.as_ref().is_some_and(|p| p.answerable());
+        if snap {
+            return false;
+        }
         if busy {
             if ask {
                 s.asks.push(peek);
@@ -248,11 +264,29 @@ pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
         layout(hwnd);
         return Redraw::None;
     }
-    let (ask, aumid, can_always, who, question) = st(|s| match &s.peek {
-        Some(p @ Peek { kind: PeekKind::Ask { id, .. }, .. }) => (Some(id.clone()), String::new(), p.can_always, p.app.clone(), p.question.clone()),
-        Some(p) => (None, p.aumid.clone(), false, String::new(), None),
-        None => (None, String::new(), false, String::new(), None),
+    // Карточка сейчас уедет из-под курсора: сжимающееся окно не должно раскрыться панелью.
+    // Только если курсор над окном (щелчок, а не Alt+Y), иначе «ушёл» не придёт и запрет не снимется.
+    if crate::shell::cursor_inside(hwnd) {
+        crate::shell::hold_hover();
+    }
+    let (ask, aumid, can_always, who, question, file) = st(|s| match &s.peek {
+        Some(p @ Peek { kind: PeekKind::Ask { id, .. }, .. }) => (Some(id.clone()), String::new(), p.can_always, p.app.clone(), p.question.clone(), String::new()),
+        Some(p) => (None, p.aumid.clone(), false, String::new(), None, p.file.clone()),
+        None => (None, String::new(), false, String::new(), None, String::new()),
     });
+    if !file.is_empty() {
+        // Снимок: сначала убрать карточку, потом действие (окно сохранения модальное).
+        hide(hwnd);
+        match h {
+            PeekHit::Open => {
+                crate::sys::launch::open(&file, None);
+            }
+            PeekHit::Shelf => crate::feat::shelf::add_paths(hwnd, vec![file]),
+            PeekHit::SaveAs => crate::feat::snap::save_as(hwnd, &file),
+            _ => {}
+        }
+        return Redraw::None;
+    }
     if let (Some(id), PeekHit::Pick(i)) = (&ask, h) {
         // Ответ на вопрос: хук разрешает инструмент и отдаёт выбранный вариант.
         if let Some(body) = question.as_ref().and_then(|q| crate::feat::agents::answer_json(q, i as usize)) {
