@@ -103,7 +103,7 @@ unsafe fn link(p: &mut Painter, right: i32, top: i32, label: &str, hit: PeekHit)
 /// Код и запрос человека — за словом «подробнее».
 unsafe fn ask(p: &mut Painter, s: &State, pk: &Peek) {
     let (left, right) = (p.s(20), p.s(W_ASK - 20));
-    if let Some(a) = s.agents.list.iter().find(|a| a.name == pk.app) {
+    if let Some(a) = s.agents.list.iter().find(|a| a.id == pk.agent) {
         let px = p.s(4);
         super::mascot::draw(p, left, p.s(18), px, a, s.notif_flip);
     }
@@ -159,7 +159,7 @@ unsafe fn ask(p: &mut Painter, s: &State, pk: &Peek) {
 /// Вопрос агента: маскот, «имя спрашивает», текст вопроса, варианты строками с номером клавиши.
 unsafe fn question(p: &mut Painter, s: &State, pk: &Peek, q: &crate::feat::agents::Question) {
     let (left, right) = (p.s(20), p.s(W_ASK - 20));
-    if let Some(a) = s.agents.list.iter().find(|a| a.name == pk.app) {
+    if let Some(a) = s.agents.list.iter().find(|a| a.id == pk.agent) {
         super::mascot::draw(p, left, p.s(18), p.s(4), a, s.notif_flip);
     }
     let x = p.s(72);
@@ -189,7 +189,7 @@ unsafe fn question(p: &mut Painter, s: &State, pk: &Peek, q: &crate::feat::agent
 /// Просьба без ответа (напоминание из уведомления Claude Code): значок, заголовок, текст.
 unsafe fn agent(p: &mut Painter, s: &State, pk: &Peek) {
     if matches!(pk.kind, PeekKind::Done) {
-        if let Some(a) = s.agents.list.iter().find(|a| a.name == pk.app) {
+        if let Some(a) = s.agents.list.iter().find(|a| a.id == pk.agent) {
             let px = p.s(4);
             super::mascot::draw(p, p.s(20), p.s(20), px, a, s.notif_flip);
         }

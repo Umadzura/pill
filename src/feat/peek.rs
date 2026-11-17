@@ -24,7 +24,8 @@ const QUIET: Duration = Duration::from_secs(3600);
 pub enum PeekKind {
     Notif,
     /// Агент ждёт разрешения. answerable — хук держит соединение, ответить можно прямо отсюда.
-    Ask { id: String, answerable: bool },
+    /// id — сессия агента, req — номер ждущего запроса в `bg::api` (ответ уходит только ему).
+    Ask { id: String, req: u64, answerable: bool },
     Done,
     /// Снимок экрана из буфера: миниатюра, «Открыть», «На полку», «Сохранить как».
     Snap,
@@ -34,6 +35,8 @@ pub struct Peek {
     pub kind: PeekKind,
     /// Маленькая строка: программа. У просьбы агента — имя проекта (по нему цвет маскота).
     pub app: String,
+    /// Карточка агента: id его сессии (по нему ищется маскот: имена папок у сессий могут совпасть).
+    pub agent: String,
     pub title: String,
     pub body: String,
     /// Уведомление: последние сообщения чата (до трёх, старые сверху).
@@ -84,7 +87,7 @@ pub enum PeekHit {
 
 impl Peek {
     pub fn new(kind: PeekKind, app: String, title: String, body: String) -> Peek {
-        Peek { kind, app, title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false, more: false, question: None, file: String::new(), art: None }
+        Peek { kind, app, agent: String::new(), title, body, lines: Vec::new(), count: 1, aumid: String::new(), hover: false, tool: String::new(), branch: String::new(), stat: (0, 0), can_always: false, more: false, question: None, file: String::new(), art: None }
     }
     pub fn answerable(&self) -> bool {
         matches!(self.kind, PeekKind::Ask { answerable: true, .. })
@@ -165,8 +168,8 @@ pub unsafe fn show(hwnd: HWND, peek: Peek, ms: Option<u32>) {
     if st(|s| s.settings.dot_mode) {
         // «Просто точка»: карточку не показываем, о событии говорит маскот в свёрнутой чёлке.
         // Ждущий хук отпускаем сразу: Claude Code спросит в своём окне.
-        if let PeekKind::Ask { id, answerable: true } = &peek.kind {
-            crate::bg::api::answer(id, None);
+        if let PeekKind::Ask { req, answerable: true, .. } = &peek.kind {
+            crate::bg::api::answer(*req, None);
         }
         // Ширина свёрнутой чёлки могла поменяться (счётчик пропущенных).
         layout(hwnd);
@@ -239,7 +242,7 @@ pub unsafe fn set_hover(hwnd: HWND, on: bool) {
 }
 
 /// Агент перестал ждать разрешения (ответили в его окне, вышло время): убрать его карточку,
-/// в том числе из очереди.
+/// в том числе из очереди. По id сессии: уходят все её просьбы (хуки отпущены `bg::api::release`/`expire`).
 pub unsafe fn resolve(hwnd: HWND, id: &str) {
     let same = |p: &Peek| matches!(&p.kind, PeekKind::Ask { id: i, .. } if i == id);
     let ours = st(|s| {
@@ -270,7 +273,7 @@ pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
         crate::shell::hold_hover();
     }
     let (ask, aumid, can_always, who, question, file) = st(|s| match &s.peek {
-        Some(p @ Peek { kind: PeekKind::Ask { id, .. }, .. }) => (Some(id.clone()), String::new(), p.can_always, p.app.clone(), p.question.clone(), String::new()),
+        Some(p @ Peek { kind: PeekKind::Ask { id, req, .. }, .. }) => (Some((id.clone(), *req)), String::new(), p.can_always, p.app.clone(), p.question.clone(), String::new()),
         Some(p) => (None, p.aumid.clone(), false, String::new(), None, p.file.clone()),
         None => (None, String::new(), false, String::new(), None, String::new()),
     });
@@ -287,17 +290,18 @@ pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
         }
         return Redraw::None;
     }
-    if let (Some(id), PeekHit::Pick(i)) = (&ask, h) {
+    if let (Some((id, req)), PeekHit::Pick(i)) = (&ask, h) {
         // Ответ на вопрос: хук разрешает инструмент и отдаёт выбранный вариант.
         if let Some(body) = question.as_ref().and_then(|q| crate::feat::agents::answer_json(q, i as usize)) {
-            crate::bg::api::answer_body(id, &body);
+            crate::bg::api::answer_body(*req, &body);
             st(|s| s.agents.set_state(id, AgentState::Work));
             hide(hwnd);
         }
         return Redraw::None;
     }
-    if let Some(id) = ask {
+    if let Some((id, req)) = ask {
         // Без решения хук отпускается, и Claude Code спрашивает в своём окне.
+        // Отвечаем только запросу этой карточки: другие просьбы той же сессии ждут в очереди.
         let decision = match h {
             PeekHit::Allow => Some(crate::bg::api::Answer::Allow),
             PeekHit::Always if can_always => Some(crate::bg::api::Answer::Always),
@@ -306,7 +310,7 @@ pub unsafe fn on_hit(hwnd: HWND, h: PeekHit) -> Redraw {
             _ => None,
         };
         let allow = decision.as_ref().map(|d| !matches!(d, crate::bg::api::Answer::Deny));
-        crate::bg::api::answer(&id, decision);
+        crate::bg::api::answer(req, decision);
         if let Some(allow) = allow {
             st(|s| s.agents.set_state(&id, if allow { AgentState::Work } else { AgentState::Wait }));
         }
