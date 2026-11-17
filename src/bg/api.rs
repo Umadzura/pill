@@ -4,6 +4,7 @@
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -13,9 +14,15 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use crate::feat::api::{self, Reply, MAX_REQUEST, PORT, QUEUE};
 use crate::ids::WM_APP_API;
 
+/// Слушающий сокет не открылся (порт занят): окно настроек пишет «API не поднялся».
+pub static DOWN: AtomicBool = AtomicBool::new(false);
+
 pub fn start(hwnd: HWND) {
     let raw = hwnd.0 as isize;
-    let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, PORT)) else { return };
+    let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, PORT)) else {
+        DOWN.store(true, Ordering::Relaxed);
+        return;
+    };
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             if let Ok(s) = conn {

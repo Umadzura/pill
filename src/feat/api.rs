@@ -8,10 +8,13 @@
 //! GET      /ping                                     «pill» — проверить, что жив
 //! POST     /hook                                     JSON хука Claude Code (см. `feat::agents`)
 //! GET|POST /agent?id=a1&name=pill&state=work&text=…  статус любого агента: work | ask | wait | done | gone
+//! GET      /open?tab=feed                            раскрыть панель на вкладке (settings: окно настроек, page=N)
 //! ```
 //! Параметры — в адресе или в теле (`application/x-www-form-urlencoded`). Для /notify тело
 //! без параметров целиком становится текстом. Слушаем только 127.0.0.1 (поток — `bg::api`).
 //! Запросы из браузера отклоняем (Origin/Sec-Fetch-*, чужой Host): сайт не сможет слать надписи.
+//! Всё, кроме /ping, требует ключ API (`settings.txt`, `api_key`): заголовок `X-Pill-Key: ключ`,
+//! а /notify, /task и /agent принимают его и параметром `key=` (curl из скриптов). Без ключа 403.
 //! Здесь разбор и логика без Windows, с тестами.
 
 use std::collections::HashMap;
@@ -50,7 +53,9 @@ pub enum Event {
     Task { id: String, title: Option<String>, progress: Option<u8>, state: TaskState },
     Agent(agents::Update),
     /// Раскрыть панель на вкладке (или свернуть): для скриптов и для сверки вида по снимку экрана.
-    Open(String, String),
+    /// Второе — номер раздела окна настроек (`tab=settings&page=N`). Текст в строку поиска
+    /// извне не подставляется.
+    Open(String, u8),
 }
 
 /// Ответ для клиента: код и текст.
@@ -66,6 +71,8 @@ const QUIET: Reply = Reply { code: 200, body: "" };
 const PONG: Reply = Reply { code: 200, body: "pill\n" };
 const BAD: Reply = Reply { code: 400, body: "bad request\n" };
 const FORBIDDEN: Reply = Reply { code: 403, body: "forbidden\n" };
+/// Хуку без ключа (прежняя версия хуков) тоже пустое тело: оно попало бы в контекст Claude.
+const FORBIDDEN_QUIET: Reply = Reply { code: 403, body: "" };
 const NOT_FOUND: Reply = Reply { code: 404, body: "not found: /notify, /task, /agent, /hook, /ping\n" };
 const TOO_BIG: Reply = Reply { code: 413, body: "too large\n" };
 
@@ -82,8 +89,32 @@ pub fn expected_len(buf: &[u8]) -> Option<usize> {
     Some(end + len)
 }
 
+/// Ключ API из настроек. Ставится один раз при старте (`set_key`), до потока API; читает поток API.
+static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Запомнить ключ API (при старте, до `bg::api::start`).
+pub fn set_key(key: &str) {
+    let _ = KEY.set(key.to_string());
+}
+
+/// Сравнить присланный ключ с нашим за постоянное время: время ответа не подскажет, сколько
+/// первых символов угадано. Пустой ключ (не создан) не подходит ни к чему.
+pub fn key_eq(got: &str, want: &str) -> bool {
+    let (a, b) = (got.as_bytes(), want.as_bytes());
+    if b.is_empty() || a.len() != b.len() {
+        return false;
+    }
+    let diff = a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y));
+    std::hint::black_box(diff) == 0
+}
+
 /// Разобрать запрос целиком: что ответить и что сделать.
 pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
+    handle_with(buf, KEY.get().map(|k| k.as_str()).unwrap_or(""))
+}
+
+/// То же с явным ключом (для тестов).
+fn handle_with(buf: &[u8], key: &str) -> (Reply, Option<Event>) {
     let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else { return (BAD, None) };
     let Ok(head) = std::str::from_utf8(&buf[..end]) else { return (BAD, None) };
     let body = &buf[end + 4..];
@@ -94,12 +125,17 @@ pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
         return (BAD, None);
     }
     let mut host_ok = false;
+    // Верный ключ в заголовке X-Pill-Key (так шлют хуки).
+    let mut key_ok = false;
     for l in lines {
         let Some((k, v)) = l.split_once(':') else { continue };
         let k = k.trim().to_ascii_lowercase();
         // Браузер всегда шлёт Origin или Sec-Fetch-* — скрипты и curl нет.
         if k == "origin" || k.starts_with("sec-fetch-") {
             return (FORBIDDEN, None);
+        }
+        if k == "x-pill-key" {
+            key_ok = key_eq(v.trim(), key);
         }
         if k == "host" {
             let h = v.trim();
@@ -113,6 +149,11 @@ pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path == "/hook" {
+        // Без ключа чужая программа подсунула бы агента с любым cwd (а по нему читается .git/HEAD,
+        // в том числе по UNC-пути) и ответы на просьбы. Ключ только заголовком.
+        if !key_ok {
+            return (FORBIDDEN_QUIET, None);
+        }
         // Тело хука бывает длиннее лимита (большой запрос, вывод инструмента): нужные поля идут первыми,
         // поэтому разбираем и обрезанное.
         return (QUIET, agents::from_hook(&String::from_utf8_lossy(body)).map(Event::Agent));
@@ -132,9 +173,14 @@ pub fn handle(buf: &[u8]) -> (Reply, Option<Event>) {
             }
         }
     }
+    // /open только с ключом в заголовке; /notify, /task и /agent ещё и параметром key= (для curl из скриптов).
+    let by_param = matches!(path, "/notify" | "/task" | "/agent") && params.get("key").is_some_and(|k| key_eq(k.trim(), key));
+    if matches!(path, "/open" | "/notify" | "/task" | "/agent") && !key_ok && !by_param {
+        return (FORBIDDEN, None);
+    }
     match path {
         "/ping" => (PONG, None),
-        "/open" => (OK, Some(Event::Open(params.get("tab").map(|t| t.trim().to_ascii_lowercase()).unwrap_or_default(), clip(params.get("q").map(|q| q.as_str()).unwrap_or(""), MAX_TITLE)))),
+        "/open" => (OK, Some(Event::Open(params.get("tab").map(|t| t.trim().to_ascii_lowercase()).unwrap_or_default(), params.get("page").and_then(|p| p.trim().parse().ok()).unwrap_or(0)))),
         "/notify" => {
             let text = clip(params.get("text").map(|s| s.trim()).unwrap_or(""), MAX_TEXT);
             if text.is_empty() {
@@ -312,12 +358,12 @@ pub unsafe fn on_events(hwnd: HWND) {
                 Notice::Done(name) => flash = Some((format!("✓ {}", name), false, 4000)),
                 Notice::Failed(name) => flash = Some((format!("✗ {}: ошибка", name), true, 8000)),
             },
-            Event::Open(tab, query) if tab == "settings" => {
-                // Окно настроек; q — номер раздела (для снимков экрана).
+            Event::Open(tab, page) if tab == "settings" => {
+                // Окно настроек; page — номер раздела (для снимков экрана).
                 crate::ui::settings::open(hwnd);
-                crate::ui::settings::show_page(query.parse().unwrap_or(0));
+                crate::ui::settings::show_page(page);
             }
-            Event::Open(tab, query) => {
+            Event::Open(tab, _) => {
                 use crate::app::Tab;
                 let t = match tab.as_str() {
                     "music" => Some(Tab::Music),
@@ -340,8 +386,8 @@ pub unsafe fn on_events(hwnd: HWND) {
                         if t == Tab::Commands {
                             s.input.mode = ["cmd", "apps", "clip", "act"].iter().position(|m| *m == tab).unwrap_or(0) as u8;
                             s.input.back = Some(Tab::Music);
-                            // Запрос можно подставить сразу: так снимают экран с результатами.
-                            s.input.text = query.clone();
+                            // Текст запроса извне не подставляем (аудит, 17.5): строка пустая.
+                            s.input.text.clear();
                             s.input.sel = 0;
                             s.input.scroll = 0;
                             if let Some(a) = apps {
@@ -421,8 +467,16 @@ pub unsafe fn on_events(hwnd: HWND) {
 mod tests {
     use super::*;
 
+    const K: &str = "0123456789abcdef0123456789abcdef";
+
+    /// Запрос с верным ключом в заголовке (как шлют хуки).
     fn req(s: &str) -> (Reply, Option<Event>) {
-        handle(s.as_bytes())
+        handle_with(s.replacen("\r\n", &format!("\r\nX-Pill-Key: {}\r\n", K), 1).as_bytes(), K)
+    }
+
+    /// Запрос как есть, без ключа в заголовке.
+    fn bare(s: &str) -> (Reply, Option<Event>) {
+        handle_with(s.as_bytes(), K)
     }
 
     #[test]
@@ -441,7 +495,7 @@ mod tests {
         let body = "Привет из скрипта";
         let raw = format!("POST /notify HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
         assert_eq!(expected_len(raw.as_bytes()), Some(raw.len()));
-        assert_eq!(handle(raw.as_bytes()).1, Some(Event::Notify { text: body.into(), secs: 4 }));
+        assert_eq!(req(&raw).1, Some(Event::Notify { text: body.into(), secs: 4 }));
 
         let (_, e) = req("POST /task HTTP/1.1\r\nHost: localhost\r\nContent-Length: 29\r\n\r\nid=r&title=Render&progress=45");
         assert_eq!(e, Some(Event::Task { id: "r".into(), title: Some("Render".into()), progress: Some(45), state: TaskState::Run }));
@@ -468,13 +522,13 @@ mod tests {
     fn agents_endpoints() {
         let body = r#"{"session_id":"s1","cwd":"C:\\p\\pill","hook_event_name":"Stop"}"#;
         let raw = format!("POST /hook HTTP/1.1\r\nHost: 127.0.0.1:47821\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
-        let (r, e) = handle(raw.as_bytes());
+        let (r, e) = req(&raw);
         assert_eq!((r.code, r.body), (200, ""));
         assert_eq!(e, Some(Event::Agent(agents::Update { id: "s1".into(), name: Some("pill".into()), state: AgentState::Done, note: None, answerable: false, extra: agents::Extra { cwd: Some("C:\\p\\pill".into()), ..Default::default() } })));
         // Тело длиннее лимита: поля в начале всё равно читаются.
         let big = format!(r#"{{"session_id":"s2","hook_event_name":"UserPromptSubmit","prompt":"{}"#, "я".repeat(MAX_REQUEST));
         let raw = format!("POST /hook HTTP/1.1\r\nHost: localhost\r\n\r\n{}", big);
-        let (r, e) = handle(raw.as_bytes());
+        let (r, e) = req(&raw);
         assert_eq!(r.code, 200);
         assert!(matches!(e, Some(Event::Agent(agents::Update { state: AgentState::Work, note: None, .. }))));
         // Неинтересное событие хука — молча ок.
@@ -483,6 +537,57 @@ mod tests {
         assert_eq!(e, Some(Event::Agent(agents::Update { id: "a".into(), name: Some("bot".into()), state: AgentState::Ask, note: Some("можно?".into()), answerable: false, extra: agents::Extra::default() })));
         assert_eq!(req("GET /agent?name=bot HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 400);
         assert_eq!(req("GET /agent?id=a&state=zzz HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 400);
+    }
+
+    #[test]
+    fn key_required() {
+        let hook = "POST /hook HTTP/1.1\r\nHost: localhost\r\n\r\n{\"session_id\":\"s\",\"cwd\":\"\\\\\\\\evil\\\\share\",\"hook_event_name\":\"Stop\"}";
+        // Хук без ключа или с чужим: 403 с пустым телом, события нет.
+        assert_eq!(bare(hook), (FORBIDDEN_QUIET, None));
+        assert_eq!(bare(&hook.replacen("\r\n", "\r\nX-Pill-Key: ffffffffffffffffffffffffffffffff\r\n", 1)), (FORBIDDEN_QUIET, None));
+        assert_eq!(bare(&hook.replacen("\r\n", "\r\nX-Pill-Key: 0123\r\n", 1)), (FORBIDDEN_QUIET, None));
+        // Хуку параметр key= не годится, только заголовок.
+        assert_eq!(bare(&hook.replacen("/hook", &format!("/hook?key={}", K), 1)), (FORBIDDEN_QUIET, None));
+        assert!(matches!(req(hook), (QUIET, Some(Event::Agent(_)))));
+        // Заголовок без пробела после двоеточия (так его пишет команда хука).
+        assert!(matches!(bare(&hook.replacen("\r\n", &format!("\r\nX-Pill-Key:{}\r\n", K), 1)), (QUIET, Some(_))));
+
+        // /open: только заголовок; параметр q больше не принимается.
+        assert_eq!(bare("GET /open?tab=feed HTTP/1.1\r\nHost: localhost\r\n\r\n").0, FORBIDDEN);
+        assert_eq!(bare(&format!("GET /open?tab=feed&key={} HTTP/1.1\r\nHost: localhost\r\n\r\n", K)).0, FORBIDDEN);
+        assert_eq!(req("GET /open?tab=cmd&q=rm%20-rf HTTP/1.1\r\nHost: localhost\r\n\r\n").1, Some(Event::Open("cmd".into(), 0)));
+        assert_eq!(req("GET /open?tab=settings&page=2 HTTP/1.1\r\nHost: localhost\r\n\r\n").1, Some(Event::Open("settings".into(), 2)));
+
+        // Скрипты: заголовок или key= в адресе или в теле.
+        assert_eq!(bare("GET /notify?text=x HTTP/1.1\r\nHost: localhost\r\n\r\n").0, FORBIDDEN);
+        assert_eq!(bare(&format!("GET /notify?text=x&key={} HTTP/1.1\r\nHost: localhost\r\n\r\n", K)).1, Some(Event::Notify { text: "x".into(), secs: 4 }));
+        assert_eq!(bare("GET /notify?text=x&key=0123456789abcdef0123456789abcdee HTTP/1.1\r\nHost: localhost\r\n\r\n").0, FORBIDDEN);
+        let body = format!("id=r&progress=5&key={}", K);
+        let raw = format!("POST /task HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
+        assert_eq!(bare(&raw).0.code, 200);
+        assert_eq!(bare("GET /task?id=r HTTP/1.1\r\nHost: localhost\r\n\r\n").0, FORBIDDEN);
+        assert_eq!(bare(&format!("GET /agent?id=a&state=done&key={} HTTP/1.1\r\nHost: localhost\r\n\r\n", K)).0.code, 200);
+        assert_eq!(bare("GET /agent?id=a&state=done HTTP/1.1\r\nHost: localhost\r\n\r\n").0, FORBIDDEN);
+        // Тело /notify без «=» — текст, ключ тогда в адресе.
+        let raw = format!("POST /notify?key={} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\nhello", K);
+        assert_eq!(bare(&raw).1, Some(Event::Notify { text: "hello".into(), secs: 4 }));
+
+        // /ping открыт; неизвестный адрес — 404.
+        assert_eq!(bare("GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\n").0, PONG);
+        assert_eq!(bare("GET /nope HTTP/1.1\r\nHost: localhost\r\n\r\n").0.code, 404);
+        // Ключ не создан: закрыто всё, кроме /ping, даже пустым заголовком.
+        assert_eq!(handle_with(b"GET /notify?text=x&key= HTTP/1.1\r\nHost: localhost\r\nX-Pill-Key: \r\n\r\n", "").0, FORBIDDEN);
+        assert_eq!(handle_with(b"GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\n", "").0, PONG);
+    }
+
+    #[test]
+    fn key_compare() {
+        assert!(key_eq(K, K));
+        assert!(!key_eq("0123456789abcdef0123456789abcdee", K));
+        assert!(!key_eq("0123", K));
+        assert!(!key_eq(&format!("{}0", K), K));
+        assert!(!key_eq("", ""));
+        assert!(!key_eq("", K));
     }
 
     #[test]

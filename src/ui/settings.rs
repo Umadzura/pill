@@ -15,7 +15,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::paint::*;
 use crate::app::{scale, st, Hit};
-use crate::feat::{hooks, notifs, settings::Settings};
+use crate::feat::hooks::{self, HookState};
+use crate::feat::{notifs, settings::Settings};
 use crate::ids::WM_MOUSELEAVE;
 use crate::sys;
 
@@ -37,7 +38,8 @@ pub enum SetHit {
     Toggle(u8),
     /// Задержка сворачивания (номер в DELAYS).
     Delay(u8),
-    /// Кнопка: 0 поставить хуки, 1 убрать хуки, 2 доступ к уведомлениям, 3 баннеры Windows, 4 папка данных.
+    /// Кнопка: 0 поставить хуки, 1 убрать хуки, 2 доступ к уведомлениям, 3 баннеры Windows, 4 папка данных,
+    /// 5 скопировать ключ API.
     Action(u8),
 }
 
@@ -49,7 +51,15 @@ pub struct SetWin {
     pub hover: Option<Hit>,
     tracking: bool,
     /// Стоят ли хуки Claude Code (перечитывается при открытии раздела «Агенты» и после кнопок).
-    hooks: Result<bool, String>,
+    hooks: Result<HookState, String>,
+    /// Ключ API только что скопирован (надпись на кнопке, до смены раздела).
+    copied: bool,
+}
+
+/// Состояние хуков с нашим ключом. Читает файл: звать вне `st()`.
+fn hooks_status() -> Result<HookState, String> {
+    let key = st(|s| s.settings.api_key.clone());
+    hooks::status(&key)
 }
 
 static CLASS: AtomicBool = AtomicBool::new(false);
@@ -92,8 +102,8 @@ pub unsafe fn open(main: HWND) {
     // Тёмный заголовок окна, как у системных приложений в тёмной теме.
     let dark: BOOL = TRUE;
     let _ = DwmSetWindowAttribute(h, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark as *const _ as *const _, std::mem::size_of::<BOOL>() as u32);
-    let hooks = hooks::status();
-    st(|s| s.setwin = Some(SetWin { hwnd: h.0 as isize, page: 0, hits: Vec::new(), hover: None, tracking: false, hooks }));
+    let hooks = hooks_status();
+    st(|s| s.setwin = Some(SetWin { hwnd: h.0 as isize, page: 0, hits: Vec::new(), hover: None, tracking: false, hooks, copied: false }));
     let _ = ShowWindow(h, SW_SHOW);
     sys::launch::force_foreground(h);
     let _ = main;
@@ -106,7 +116,7 @@ pub unsafe fn show_page(page: u8) {
         hwnd_of(w)
     }));
     if page == 1 {
-        let hk = hooks::status();
+        let hk = hooks_status();
         st(|s| {
             if let Some(w) = s.setwin.as_mut() {
                 w.hooks = hk;
@@ -170,10 +180,11 @@ unsafe fn on_click(hwnd: HWND, h: SetHit) {
     match h {
         SetHit::Page(i) => {
             save = false;
-            let hooks = if i == 1 { Some(hooks::status()) } else { None };
+            let hooks = if i == 1 { Some(hooks_status()) } else { None };
             st(|s| {
                 if let Some(w) = s.setwin.as_mut() {
                     w.page = i;
+                    w.copied = false;
                     if let Some(hk) = hooks {
                         w.hooks = hk;
                     }
@@ -193,10 +204,21 @@ unsafe fn on_click(hwnd: HWND, h: SetHit) {
             save = false;
             match a {
                 0 | 1 => {
-                    let res = hooks::apply(a == 0).and_then(|_| hooks::status());
+                    let key = st(|s| s.settings.api_key.clone());
+                    let res = hooks::apply(a == 0, &key).and_then(|_| hooks::status(&key));
                     st(|s| {
                         if let Some(w) = s.setwin.as_mut() {
                             w.hooks = res;
+                        }
+                    });
+                }
+                5 => {
+                    // Ключ для своих скриптов: curl -H "X-Pill-Key: …" или параметр key=.
+                    let key = st(|s| s.settings.api_key.clone());
+                    let ok = !key.is_empty() && sys::clipboard::set_text(hwnd, &key);
+                    st(|s| {
+                        if let Some(w) = s.setwin.as_mut() {
+                            w.copied = ok;
                         }
                     });
                 }
@@ -246,7 +268,7 @@ unsafe fn render(hwnd: HWND, hdc: HDC) {
             nav(&mut p, win.page, h);
             match win.page {
                 0 => page_panel(&mut p, &s.settings),
-                1 => page_agents(&mut p, &s.settings, &win.hooks),
+                1 => page_agents(&mut p, &s.settings, &win.hooks, win.copied),
                 2 => page_notifs(&mut p, &s.settings),
                 3 => page_sounds(&mut p, &s.settings),
                 4 => page_keys(&mut p),
@@ -368,25 +390,38 @@ unsafe fn page_panel(p: &mut Painter, cfg: &Settings) {
     keys(p, area, &["Ctrl", "Alt", "H"]);
 }
 
-unsafe fn page_agents(p: &mut Painter, cfg: &Settings, hooks_state: &Result<bool, String>) {
+unsafe fn page_agents(p: &mut Painter, cfg: &Settings, hooks_state: &Result<HookState, String>, copied: bool) {
     let mut y = title(p, "Агенты");
-    let (sub, on) = match hooks_state {
-        Ok(true) => ("установлены".to_string(), true),
-        Ok(false) => ("не установлены — без них агенты не появятся в Pill".to_string(), false),
-        Err(e) => (e.clone(), false),
+    let (sub, state) = match hooks_state {
+        Ok(HookState::On) => ("установлены".to_string(), HookState::On),
+        // Стоят от прежней версии (без ключа API или с другим): /hook им отвечает 403.
+        Ok(HookState::Stale) => ("нужно переустановить: стоят от старой версии".to_string(), HookState::Stale),
+        Ok(HookState::Off) => ("не установлены — без них агенты не появятся в Pill".to_string(), HookState::Off),
+        Err(e) => (e.clone(), HookState::Off),
     };
     let area = row(p, y, "Хуки Claude Code", &sub, 250);
-    if on {
-        let l = button(p, area.right, area, "Убрать", SetHit::Action(1), false);
-        button(p, l - p.s(8), area, "Переустановить", SetHit::Action(0), false);
-    } else {
+    if state == HookState::Off {
         button(p, area.right, area, "Установить", SetHit::Action(0), true);
+    } else {
+        let l = button(p, area.right, area, "Убрать", SetHit::Action(1), false);
+        button(p, l - p.s(8), area, "Переустановить", SetHit::Action(0), state == HookState::Stale);
     }
     let note = p.r(NAV_W + 28, y + ROW + 4, W - 28, y + ROW + 22);
     p.text(p.f.small, "Пишет в ~/.claude/settings.json, прежний файл сохраняется рядом как settings.json.pill-backup.", note, FAINT, DT_LEFT | DT_END_ELLIPSIS);
     let note2 = RECT { top: note.bottom, bottom: note.bottom + p.s(18), ..note };
     p.text(p.f.small, "Свои записи Pill узнаёт по адресу 127.0.0.1:47821, чужие хуки не трогает.", note2, FAINT, DT_LEFT | DT_END_ELLIPSIS);
     y += ROW + 48;
+    // Порт занят (второй Pill или чужая программа): ни хуки, ни скрипты до Pill не дойдут.
+    let (label, sub) = if crate::bg::api::DOWN.load(Ordering::Relaxed) {
+        ("API не поднялся: порт 47821 занят", "агенты и скрипты не дойдут до Pill; освободи порт и перезапусти Pill")
+    } else {
+        ("Локальный API", "без ключа хуки и скрипты получают 403: заголовок X-Pill-Key или key=")
+    };
+    let area = row(p, y, label, sub, 170);
+    if !cfg.api_key.is_empty() {
+        button(p, area.right, area, if copied { "Скопирован" } else { "Скопировать ключ" }, SetHit::Action(5), false);
+    }
+    y += ROW;
     let area = row(p, y, "Не мешать в окне агента", "без карточек, если терминал или редактор этого проекта уже активен", 50);
     toggle(p, area, cfg.skip_focused, 2);
     y += ROW;
