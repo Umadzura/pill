@@ -148,7 +148,12 @@ pub fn st<R>(f: impl FnOnce(&mut State) -> R) -> R {
 }
 
 pub unsafe fn init_state() {
-    let settings = crate::feat::settings::Settings::load();
+    // Ключ API создаётся при первом запуске и сразу пишется в settings.txt (до STATE, вне st()).
+    let mut settings = crate::feat::settings::Settings::load();
+    if settings.ensure_key() {
+        settings.save();
+    }
+    api::set_key(&settings.api_key);
     let s = State {
         shell: shell::Shell::new(),
         input: input::Input::default(),

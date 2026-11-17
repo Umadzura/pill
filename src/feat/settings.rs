@@ -20,6 +20,9 @@ pub struct Settings {
     pub skip_focused: bool,
     /// История буфера только в памяти: `clipboard.txt` не пишется, после выхода записи пропадают.
     pub clip_memory: bool,
+    /// Ключ локального API (hex, 16 случайных байт): создаётся один раз при первом запуске,
+    /// вписывается в команду хуков Claude Code. Пустой — ещё не создан (или файл не записать).
+    pub api_key: String,
     extra: Vec<String>,
 }
 
@@ -32,6 +35,7 @@ impl Default for Settings {
             quiet: None,
             skip_focused: true,
             clip_memory: false,
+            api_key: String::new(),
             extra: Vec::new(),
         }
     }
@@ -83,6 +87,13 @@ impl Settings {
                             s.clip_memory = flag(v).unwrap_or(s.clip_memory);
                             true
                         }
+                        "api_key" => {
+                            // Кривой ключ отбрасываем: при старте создастся новый.
+                            if valid_key(v) {
+                                s.api_key = v.to_ascii_lowercase();
+                            }
+                            true
+                        }
                         _ => false,
                     }
                 }
@@ -103,6 +114,9 @@ impl Settings {
         }
         out.push_str(&format!("skip_focused={}\n", self.skip_focused as u8));
         out.push_str(&format!("clip_memory={}\n", self.clip_memory as u8));
+        if !self.api_key.is_empty() {
+            out.push_str(&format!("api_key={}\n", self.api_key));
+        }
         for l in &self.extra {
             out.push_str(l);
             out.push('\n');
@@ -128,6 +142,20 @@ impl Settings {
         path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Settings::parse(&t)).unwrap_or_default()
     }
 
+    /// Создать ключ API, если его ещё нет. true — создан, файл надо записать (`save`, вне `st()`).
+    pub fn ensure_key(&mut self) -> bool {
+        if !self.api_key.is_empty() {
+            return false;
+        }
+        match crate::sys::random_hex(KEY_BYTES) {
+            Some(k) => {
+                self.api_key = k;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Пишет файл. Звать вне `st()`.
     pub fn save(&self) {
         let Some(p) = path() else { return };
@@ -136,6 +164,14 @@ impl Settings {
         }
         let _ = std::fs::write(p, self.serialize());
     }
+}
+
+/// Длина ключа API в байтах (в файле вдвое больше символов hex).
+const KEY_BYTES: usize = 16;
+
+/// Ключ из файла годится: только hex и не короче 16 байт.
+fn valid_key(v: &str) -> bool {
+    v.len() >= KEY_BYTES * 2 && v.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn path() -> Option<PathBuf> {
@@ -188,5 +224,28 @@ mod tests {
         let bad = Settings::parse("clip_memory=maybe\n");
         assert!(!bad.clip_memory);
         assert_eq!(bad.serialize(), Settings::default().serialize());
+    }
+
+    #[test]
+    fn api_key() {
+        let k = "0123456789abcdef0123456789ABCDEF";
+        let s = Settings::parse(&format!("api_key={}\n", k));
+        assert_eq!(s.api_key, k.to_ascii_lowercase());
+        assert_eq!(Settings::parse(&s.serialize()), s);
+        // Короткий или не hex ключ не принимается и не копится в файле.
+        for bad in ["api_key=abc", "api_key=zz23456789abcdef0123456789abcdef"] {
+            let b = Settings::parse(bad);
+            assert!(b.api_key.is_empty() && !b.serialize().contains("api_key"));
+        }
+        // Создаётся один раз, у каждого свой.
+        let mut n = Settings::default();
+        assert!(n.ensure_key());
+        assert!(valid_key(&n.api_key) && n.api_key.len() == KEY_BYTES * 2);
+        let first = n.api_key.clone();
+        assert!(!n.ensure_key());
+        assert_eq!(n.api_key, first);
+        let mut m = Settings::default();
+        m.ensure_key();
+        assert_ne!(m.api_key, first);
     }
 }
