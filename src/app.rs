@@ -148,13 +148,14 @@ pub fn st<R>(f: impl FnOnce(&mut State) -> R) -> R {
 }
 
 pub unsafe fn init_state() {
+    let settings = crate::feat::settings::Settings::load();
     let s = State {
         shell: shell::Shell::new(),
         input: input::Input::default(),
         hits: Vec::new(),
         hover: None,
         viz_area: None,
-        clip: clip::History::load(),
+        clip: clip::History::load(!settings.clip_memory),
         shelf: crate::feat::shelf::Shelf::load(),
         snaps: Default::default(),
         cmd: cmd::CmdState { apps: Vec::new(), freq: cmd::load_freq() },
@@ -174,7 +175,7 @@ pub unsafe fn init_state() {
         feed_scroll: 0,
         lyrics: false,
         setwin: None,
-        settings: crate::feat::settings::Settings::load(),
+        settings,
     };
     STATE.with(|cell| *cell.borrow_mut() = Some(s));
 }

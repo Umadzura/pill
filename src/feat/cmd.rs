@@ -15,6 +15,15 @@ pub const MODE_APPS: u8 = 1;
 pub const MODE_CLIP: u8 = 2;
 pub const MODE_ACT: u8 = 3;
 pub const MODES: [&str; 4] = ["Всё", "Программы", "Буфер", "Действия"];
+/// Сколько символов принимает строка поиска: дальше ввод игнорируется. Заодно держит
+/// глубину рекурсии калькулятора (скобки, минусы) в безопасных пределах.
+pub const QUERY_MAX: usize = 300;
+
+/// Дописать к строке поиска, пока в ней меньше `QUERY_MAX` символов; лишнее отбрасывается.
+pub fn push_capped(text: &mut String, add: &str) {
+    let room = QUERY_MAX.saturating_sub(text.chars().count());
+    text.extend(add.chars().take(room));
+}
 
 pub struct CmdState {
     /// Ярлыки, найденные при последнем открытии поиска.
@@ -264,7 +273,9 @@ pub fn calc(q: &str) -> Option<f64> {
             c => c,
         })
         .collect();
+    // Длинное выражение (запрос из API, вставка в обход строки поиска) не считаем: рекурсия по скобкам.
     if s.is_empty()
+        || s.len() > QUERY_MAX
         || !s.chars().any(|c| c.is_ascii_digit())
         || !s.chars().any(|c| "+-*/^%()".contains(c))
         || !s.chars().all(|c| c.is_ascii_digit() || ".+-*/^%()".contains(c))
@@ -412,7 +423,8 @@ pub fn parse_timer(q: &str) -> Option<u64> {
         if !unit.is_empty() {
             had_unit = true;
         }
-        total += n * mult;
+        // Огромное число не переполняется (и не паникует): упрётся в потолок и отсечётся ниже.
+        total = total.saturating_add(n.saturating_mul(mult));
         any = true;
     }
     if !any || !(prefixed || had_unit) || total == 0 || total > 24 * 3600 {
@@ -454,6 +466,36 @@ mod tests {
         assert_eq!(parse_timer("5"), None);
         assert_eq!(parse_timer("telegram"), None);
         assert_eq!(fmt_dur(3725), "1:02:05");
+    }
+
+    #[test]
+    fn timer_huge_numbers() {
+        // Переполнение при умножении и сложении не паникует и не даёт «короткий» таймер.
+        assert_eq!(parse_timer("таймер 6000000000000000ч"), None);
+        assert_eq!(parse_timer("18446744073709551615ч 18446744073709551615м"), None);
+        assert_eq!(parse_timer("99999999999999999999999м"), None);
+        assert_eq!(parse_timer("24ч"), Some(86_400));
+    }
+
+    #[test]
+    fn calc_deep_nesting() {
+        // В пределах лимита глубокие скобки считаются, за ним — просто не калькулятор.
+        let deep = format!("{}1+1{}", "(".repeat(140), ")".repeat(140));
+        assert_eq!(calc(&deep), Some(2.0));
+        assert_eq!(calc(&format!("{}1", "-".repeat(298))), Some(1.0));
+        let huge = format!("{}1+1{}", "(".repeat(100_000), ")".repeat(100_000));
+        assert_eq!(calc(&huge), None);
+        assert_eq!(calc(&"(".repeat(100_000)), None);
+    }
+
+    #[test]
+    fn query_cap() {
+        let mut t = "a".repeat(QUERY_MAX - 2);
+        push_capped(&mut t, "бвгд");
+        assert_eq!(t.chars().count(), QUERY_MAX);
+        assert!(t.ends_with("бв"));
+        push_capped(&mut t, "x");
+        assert_eq!(t.chars().count(), QUERY_MAX);
     }
 
     #[test]

@@ -87,23 +87,53 @@ fn parse_line(line: &str) -> Option<Entry> {
 pub struct History {
     pub items: Vec<Entry>,
     path: Option<PathBuf>,
+    /// Писать ли `clipboard.txt` (`!settings.clip_memory`). Выключено — история живёт только в памяти.
+    pub disk: bool,
+}
+
+fn file_path() -> Option<PathBuf> {
+    std::env::var("APPDATA").ok().map(|a| PathBuf::from(a).join("Pill").join("clipboard.txt"))
+}
+
+/// Удалить `clipboard.txt` (включили «не хранить историю на диске»). Звать вне `st()`.
+pub fn remove_file() {
+    if let Some(p) = file_path() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Записать готовый текст истории (`History::serialize`) в `clipboard.txt`. Звать вне `st()`.
+pub fn write_file(text: &str) {
+    let Some(path) = file_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, text);
 }
 
 impl History {
-    pub fn load() -> Self {
-        let path = std::env::var("APPDATA").ok().map(|a| PathBuf::from(a).join("Pill").join("clipboard.txt"));
+    /// `disk = false`: файл не читается, а оставшийся от прошлого раза удаляется
+    /// (настройку могли включить правкой `settings.txt`). Зовётся до `st()`, при старте.
+    pub fn load(disk: bool) -> Self {
+        let path = file_path();
         let mut items = Vec::new();
-        if let Some(data) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
+        if !disk {
+            remove_file();
+        } else if let Some(data) = path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             items.extend(data.lines().filter_map(parse_line));
         }
-        History { items, path }
+        History { items, path, disk }
     }
 
     fn save(&self) {
-        let Some(path) = &self.path else { return };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+        if !self.disk || self.path.is_none() {
+            return;
         }
+        write_file(&self.serialize());
+    }
+
+    /// Текст файла истории: строка на запись.
+    pub fn serialize(&self) -> String {
         let mut out = String::new();
         for e in &self.items {
             out.push_str(if e.pinned { "P\t" } else { "-\t" });
@@ -112,7 +142,7 @@ impl History {
             out.push_str(&escape(&e.text));
             out.push('\n');
         }
-        let _ = std::fs::write(path, out);
+        out
     }
 
     /// Новая запись наверх. Повтор поднимается наверх с сохранением закрепления.
@@ -263,7 +293,7 @@ mod tests {
 
     #[test]
     fn history_order() {
-        let mut h = History { items: Vec::new(), path: None };
+        let mut h = History { items: Vec::new(), path: None, disk: false };
         h.add("one".into());
         h.add("two".into());
         h.toggle_pin(1); // one закреплён
@@ -274,5 +304,9 @@ mod tests {
         let v = h.view("");
         assert_eq!(h.items[v[0]].text, "one");
         assert_eq!(h.view("thr").len(), 1);
+        // То, что пишется в файл при возврате истории на диск, читается обратно.
+        let back: Vec<Entry> = h.serialize().lines().filter_map(parse_line).collect();
+        assert_eq!(back.len(), h.items.len());
+        assert!(back.iter().zip(&h.items).all(|(a, b)| a.text == b.text && a.pinned == b.pinned && a.time == b.time));
     }
 }

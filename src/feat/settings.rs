@@ -18,6 +18,8 @@ pub struct Settings {
     pub quiet: Option<(u8, u8)>,
     /// Не показывать карточки агента, если его окно (терминал, редактор) и так активно.
     pub skip_focused: bool,
+    /// История буфера только в памяти: `clipboard.txt` не пишется, после выхода записи пропадают.
+    pub clip_memory: bool,
     extra: Vec<String>,
 }
 
@@ -29,6 +31,7 @@ impl Default for Settings {
             sound: true,
             quiet: None,
             skip_focused: true,
+            clip_memory: false,
             extra: Vec::new(),
         }
     }
@@ -76,6 +79,10 @@ impl Settings {
                             s.skip_focused = flag(v).unwrap_or(s.skip_focused);
                             true
                         }
+                        "clip_memory" => {
+                            s.clip_memory = flag(v).unwrap_or(s.clip_memory);
+                            true
+                        }
                         _ => false,
                     }
                 }
@@ -95,6 +102,7 @@ impl Settings {
             None => out.push_str("quiet=off\n"),
         }
         out.push_str(&format!("skip_focused={}\n", self.skip_focused as u8));
+        out.push_str(&format!("clip_memory={}\n", self.clip_memory as u8));
         for l in &self.extra {
             out.push_str(l);
             out.push('\n');
@@ -167,5 +175,18 @@ mod tests {
         let day = Settings::parse("quiet=9-18\n");
         assert!(day.quiet_now(9) && !day.quiet_now(18));
         assert!(!Settings::parse("quiet=off\n").quiet_now(3));
+    }
+
+    #[test]
+    fn clip_memory_flag() {
+        assert!(!Settings::default().clip_memory);
+        let s = Settings::parse("clip_memory=1\n");
+        assert!(s.clip_memory);
+        assert!(s.serialize().contains("clip_memory=1\n"));
+        assert_eq!(Settings::parse(&s.serialize()), s);
+        // Кривое значение оставляет историю на диске и не копится в `extra`.
+        let bad = Settings::parse("clip_memory=maybe\n");
+        assert!(!bad.clip_memory);
+        assert_eq!(bad.serialize(), Settings::default().serialize());
     }
 }

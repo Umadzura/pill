@@ -26,17 +26,42 @@ pub fn owner() -> HWND {
     unsafe { GetClipboardOwner().unwrap_or_default() }
 }
 
+/// Владелец буфера попросил не сохранять запись: менеджеры паролей и вообще все, кто прячет
+/// содержимое от истории Windows (Win+V). Три признака: `ExcludeClipboardContentFromMonitorProcessing`,
+/// `Clipboard Viewer Ignore` (есть формат — не берём) и `CanIncludeInClipboardHistory` со значением 0.
+/// Звать при открытом буфере: значение последнего формата читается через GetClipboardData.
 unsafe fn excluded() -> bool {
-    let exclude = RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"));
-    exclude != 0 && IsClipboardFormatAvailable(exclude).is_ok()
+    let has = |name: windows::core::PCWSTR| {
+        let f = RegisterClipboardFormatW(name);
+        f != 0 && IsClipboardFormatAvailable(f).is_ok()
+    };
+    if has(w!("ExcludeClipboardContentFromMonitorProcessing")) || has(w!("Clipboard Viewer Ignore")) {
+        return true;
+    }
+    let can = RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory"));
+    if can == 0 || IsClipboardFormatAvailable(can).is_err() {
+        return false;
+    }
+    let Ok(h) = GetClipboardData(can) else { return false };
+    let hg = HGLOBAL(h.0);
+    let p = GlobalLock(hg) as *const u8;
+    if p.is_null() {
+        return false;
+    }
+    let deny = history_denied(std::slice::from_raw_parts(p, GlobalSize(hg).min(4)));
+    let _ = GlobalUnlock(hg);
+    deny
+}
+
+/// Значение `CanIncludeInClipboardHistory`: DWORD, 0 — не класть в историю, 1 — можно.
+/// Короткие и кривые данные запретом не считаем.
+fn history_denied(d: &[u8]) -> bool {
+    d.len() >= 4 && u32::from_le_bytes([d[0], d[1], d[2], d[3]]) == 0
 }
 
 /// Картинка из буфера. Сначала PNG («Ножницы» кладут и его), иначе CF_DIB.
 /// GetClipboardData может попросить владельца отрисовать данные: звать вне `st()`.
 pub unsafe fn read_image(hwnd: HWND) -> Option<Image> {
-    if excluded() {
-        return None;
-    }
     let png = RegisterClipboardFormatW(w!("PNG"));
     let fmt = if png != 0 && IsClipboardFormatAvailable(png).is_ok() {
         png
@@ -46,6 +71,10 @@ pub unsafe fn read_image(hwnd: HWND) -> Option<Image> {
         return None;
     };
     if !open(hwnd) {
+        return None;
+    }
+    if excluded() {
+        let _ = CloseClipboard();
         return None;
     }
     let mut bytes = None;
@@ -124,10 +153,11 @@ unsafe fn open(hwnd: HWND) -> bool {
 
 /// Текст из буфера. None, если там не текст или менеджер паролей попросил не сохранять.
 pub unsafe fn read_text(hwnd: HWND) -> Option<String> {
-    if excluded() {
+    if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_err() || !open(hwnd) {
         return None;
     }
-    if IsClipboardFormatAvailable(CF_UNICODETEXT.0 as u32).is_err() || !open(hwnd) {
+    if excluded() {
+        let _ = CloseClipboard();
         return None;
     }
     let mut result = None;
@@ -205,5 +235,13 @@ mod tests {
         // Палитра и обрезанные данные не берём.
         assert!(dib_to_bgra(&header(1, 1, 8, 0)).is_none());
         assert!(dib_to_bgra(&header(4, 4, 32, 0)).is_none());
+    }
+
+    #[test]
+    fn history_flag() {
+        assert!(history_denied(&[0, 0, 0, 0]));
+        assert!(!history_denied(&[1, 0, 0, 0]));
+        assert!(!history_denied(&[0, 0]));
+        assert!(!history_denied(&[]));
     }
 }

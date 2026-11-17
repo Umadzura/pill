@@ -167,12 +167,13 @@ pub unsafe fn on_char(hwnd: HWND, c: u32) {
             // Ctrl+V в поле ввода — первая строка буфера.
             if let Some(t) = sys::clipboard::read_text(hwnd) {
                 let line = t.lines().next().unwrap_or("").to_string();
-                st(|s| s.input.text.push_str(&line));
+                st(|s| cmd::push_capped(&mut s.input.text, &line));
             }
         }
         c if c >= 0x20 => {
             if let Some(ch) = char::from_u32(c) {
-                st(|s| s.input.text.push(ch));
+                // Сверх `cmd::QUERY_MAX` символов ввод игнорируется.
+                st(|s| cmd::push_capped(&mut s.input.text, ch.encode_utf8(&mut [0; 4])));
             }
         }
         _ => return,

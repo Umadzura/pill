@@ -33,7 +33,8 @@ const BG_WIN: COLORREF = rgb(11, 11, 12);
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SetHit {
     Page(u8),
-    /// Переключатель: 0 «просто точка», 1 автозапуск, 2 «не мешать в окне агента», 3 тихие часы, 4 звуки.
+    /// Переключатель: 0 «просто точка», 1 автозапуск, 2 «не мешать в окне агента», 3 тихие часы, 4 звуки,
+    /// 5 история буфера только в памяти.
     Toggle(u8),
     /// Задержка сворачивания (номер в DELAYS).
     Delay(u8),
@@ -187,6 +188,20 @@ unsafe fn on_click(hwnd: HWND, h: SetHit) {
         }
         SetHit::Toggle(2) => cfg.skip_focused = !cfg.skip_focused,
         SetHit::Toggle(3) => cfg.quiet = if cfg.quiet.is_some() { None } else { Some((23, 8)) },
+        SetHit::Toggle(5) => {
+            // Файл удаляется и пишется здесь, вне `st()`; в `st()` только флаг и снимок истории.
+            cfg.clip_memory = !cfg.clip_memory;
+            let disk = !cfg.clip_memory;
+            let text = st(|s| {
+                s.clip.disk = disk;
+                disk.then(|| s.clip.serialize())
+            });
+            match text {
+                // Вернули историю на диск: то, что накопилось в памяти, не теряется.
+                Some(t) => crate::feat::clip::write_file(&t),
+                None => crate::feat::clip::remove_file(),
+            }
+        }
         SetHit::Toggle(_) => cfg.sound = !cfg.sound,
         SetHit::Delay(i) => cfg.collapse_ms = DELAYS[(i as usize).min(DELAYS.len() - 1)].0,
         SetHit::Action(a) => {
@@ -363,6 +378,9 @@ unsafe fn page_panel(p: &mut Painter, cfg: &Settings) {
     y += ROW;
     let area = row(p, y, "Запускать вместе с Windows", "Pill стартует сам после входа в систему", 50);
     toggle(p, area, sys::autostart::enabled(), 1);
+    y += ROW;
+    let area = row(p, y, "Не хранить историю буфера на диске", "только в памяти до выхода, clipboard.txt удаляется", 50);
+    toggle(p, area, cfg.clip_memory, 5);
     y += ROW;
     let area = row(p, y, "Спрятать и вернуть пилюлю", "чтобы нажать то, что под ней", 130);
     keys(p, area, &["Ctrl", "Alt", "H"]);
