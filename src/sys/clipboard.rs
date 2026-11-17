@@ -179,21 +179,46 @@ pub unsafe fn read_text(hwnd: HWND) -> Option<String> {
 }
 
 pub unsafe fn set_text(hwnd: HWND, text: &str) -> bool {
-    let w: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    put_text(hwnd, text, false)
+}
+
+/// Секрет (ключ API): с пометками «не сохранять», чтобы он не осел ни в истории Pill,
+/// ни в журнале буфера Windows (Win+V), ни у других менеджеров буфера.
+pub unsafe fn set_secret(hwnd: HWND, text: &str) -> bool {
+    put_text(hwnd, text, true)
+}
+
+/// Положить байты в буфер в формате `fmt` (буфер уже открыт и очищен).
+unsafe fn put(fmt: u32, bytes: &[u8]) -> bool {
+    let Ok(hg) = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1)) else { return false };
+    let p = GlobalLock(hg) as *mut u8;
+    let mut ok = false;
+    if !p.is_null() {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p, bytes.len());
+        let _ = GlobalUnlock(hg);
+        ok = SetClipboardData(fmt, HANDLE(hg.0)).is_ok();
+    }
+    if !ok {
+        let _ = GlobalFree(hg);
+    }
+    ok
+}
+
+unsafe fn put_text(hwnd: HWND, text: &str, secret: bool) -> bool {
+    let bytes: Vec<u8> = text.encode_utf16().chain(Some(0)).flat_map(u16::to_le_bytes).collect();
     if !open(hwnd) {
         return false;
     }
     let mut ok = false;
     if EmptyClipboard().is_ok() {
-        if let Ok(hg) = GlobalAlloc(GMEM_MOVEABLE, w.len() * 2) {
-            let p = GlobalLock(hg) as *mut u16;
-            if !p.is_null() {
-                std::ptr::copy_nonoverlapping(w.as_ptr(), p, w.len());
-                let _ = GlobalUnlock(hg);
-                ok = SetClipboardData(CF_UNICODETEXT.0 as u32, HANDLE(hg.0)).is_ok();
-            }
-            if !ok {
-                let _ = GlobalFree(hg);
+        ok = put(CF_UNICODETEXT.0 as u32, &bytes);
+        if ok && secret {
+            let exclude = RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"));
+            let history = RegisterClipboardFormatW(w!("CanIncludeInClipboardHistory"));
+            let cloud = RegisterClipboardFormatW(w!("CanUploadToCloudClipboard"));
+            put(exclude, &[0]);
+            for f in [history, cloud] {
+                put(f, &0u32.to_le_bytes());
             }
         }
     }

@@ -230,7 +230,7 @@ unsafe fn on_click(hwnd: HWND, h: SetHit) {
                 5 => {
                     // Ключ для своих скриптов: curl -H "X-Pill-Key: …" или параметр key=.
                     let key = st(|s| s.settings.api_key.clone());
-                    let ok = !key.is_empty() && sys::clipboard::set_text(hwnd, &key);
+                    let ok = !key.is_empty() && sys::clipboard::set_secret(hwnd, &key);
                     st(|s| {
                         if let Some(w) = s.setwin.as_mut() {
                             w.copied = ok;
