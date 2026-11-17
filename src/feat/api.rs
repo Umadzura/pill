@@ -49,6 +49,8 @@ pub enum Event {
     Notify { text: String, secs: u32 },
     Task { id: String, title: Option<String>, progress: Option<u8>, state: TaskState },
     Agent(agents::Update),
+    /// То же от хука, который ждёт ответа: `bg::api` держит его соединение под этим номером запроса.
+    Held(agents::Update, u64),
     /// Раскрыть панель на вкладке (или свернуть): для скриптов и для сверки вида по снимку экрана.
     Open(String, String),
 }
@@ -305,6 +307,11 @@ pub unsafe fn on_events(hwnd: HWND) {
     let now = Instant::now();
     let mut flash: Option<(String, bool, u32)> = None;
     for ev in events {
+        // Номер ждущего запроса: ответ уйдёт только в его соединение (0 — хук ответа не ждёт).
+        let req = match &ev {
+            Event::Held(_, r) => *r,
+            _ => 0,
+        };
         match ev {
             Event::Notify { text, secs } => flash = Some((text, false, secs * 1000)),
             Event::Task { id, title, progress, state } => match st(|s| s.tasks.apply(id, title, progress, state, now)) {
@@ -353,7 +360,7 @@ pub unsafe fn on_events(hwnd: HWND) {
                 crate::shell::set_expanded(hwnd, t.is_some());
                 crate::shell::layout(hwnd);
             }
-            Event::Agent(u) => {
+            Event::Agent(u) | Event::Held(u, _) => {
                 let id = u.id.clone();
                 let notice = st(|s| s.agents.apply(u, now));
                 // Ветку git читаем один раз на запрос человека, вне st().
@@ -370,16 +377,18 @@ pub unsafe fn on_events(hwnd: HWND) {
                     Some(agents::Notice::Ask { answerable, .. }) if focused => {
                         // Пусть спросит в своём окне: человек уже там.
                         if answerable {
-                            crate::bg::api::answer(&id, None);
+                            crate::bg::api::answer(req, None);
                         }
                     }
                     Some(agents::Notice::Done { .. }) if focused => {}
                     Some(agents::Notice::Ask { name, text, answerable }) => {
-                        let kind = PeekKind::Ask { id, answerable };
+                        let kind = PeekKind::Ask { id: id.clone(), req, answerable };
                         let mut pk = Peek::new(kind, "Claude Code".into(), format!("{}: нужно разрешение", name), text);
+                        pk.agent = id.clone();
                         if answerable {
                             // Карточка с ответом: имя проекта, запрос человека, инструмент, строки кода, ветка.
-                            let got = st(|s| s.agents.list.iter().find(|a| a.name == name).map(|a| (a.note.clone(), a.tool.clone(), a.branch.clone().unwrap_or_default(), a.ask_lines.clone(), a.ask_stat, a.ask_always, a.question.clone())));
+                            // Агента ищем по id сессии: у двух папок с одним именем свои просьбы.
+                            let got = st(|s| s.agents.list.iter().find(|a| a.id == id).map(|a| (a.note.clone(), a.tool.clone(), a.branch.clone().unwrap_or_default(), a.ask_lines.clone(), a.ask_stat, a.ask_always, a.question.clone())));
                             if let Some((note, tool, branch, lines, stat, always, question)) = got {
                                 pk.can_always = always;
                                 pk.question = question;
@@ -398,12 +407,14 @@ pub unsafe fn on_events(hwnd: HWND) {
                     }
                     Some(agents::Notice::Done { name, text, secs }) => {
                         let _ = text;
-                        let pk = Peek::new(PeekKind::Done, name.clone(), format!("{} готов", name), agents::fmt_worked(secs));
+                        let mut pk = Peek::new(PeekKind::Done, name.clone(), format!("{} готов", name), agents::fmt_worked(secs));
+                        pk.agent = id.clone();
                         peek::show(hwnd, pk, Some(4000));
                         sound(MB_ICONASTERISK);
                     }
                     Some(agents::Notice::Resolved) => {
-                        crate::bg::api::answer(&id, None);
+                        // Перестал ждать: отпустить все запросы этой сессии.
+                        crate::bg::api::release(&id);
                         peek::resolve(hwnd, &id);
                     }
                     None => {}
