@@ -19,11 +19,34 @@ pub static DOWN: AtomicBool = AtomicBool::new(false);
 
 pub fn start(hwnd: HWND) {
     let raw = hwnd.0 as isize;
-    let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, PORT)) else {
+    let bind = || TcpListener::bind((Ipv4Addr::LOCALHOST, PORT));
+    let first = bind();
+    // Сразу после обновления порт ещё держит старый процесс (он выходит, дождавшись нашего первого тика):
+    // ждём его в своём же потоке до 30 с, не задерживая запуск.
+    let retry = first.is_err() && crate::feat::update::is_after();
+    if first.is_err() && !retry {
         DOWN.store(true, Ordering::Relaxed);
         return;
-    };
+    }
     std::thread::spawn(move || {
+        let listener = match first {
+            Ok(l) => l,
+            Err(_) => {
+                let mut got = None;
+                for _ in 0..120 {
+                    std::thread::sleep(Duration::from_millis(250));
+                    if let Ok(l) = bind() {
+                        got = Some(l);
+                        break;
+                    }
+                }
+                let Some(l) = got else {
+                    DOWN.store(true, Ordering::Relaxed);
+                    return;
+                };
+                l
+            }
+        };
         for conn in listener.incoming() {
             if let Ok(s) = conn {
                 serve(s, raw);

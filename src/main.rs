@@ -37,11 +37,26 @@ fn main() {
             let _ = std::fs::write(dir.join("crash.log"), format!("{}\n", info));
         }
     }));
+    let args: Vec<String> = std::env::args().collect();
     unsafe {
-        let _mutex = CreateMutexW(None, true, w!("Local\\PillSingleInstance"));
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            return;
+        // После обновления старый процесс ещё пару мгновений держит мьютекс: подождать до 10 с.
+        let tries = if feat::update::after_update(&args) { 100 } else { 1 };
+        let mut mutex = None;
+        for i in 0..tries {
+            let m = CreateMutexW(None, true, w!("Local\\PillSingleInstance"));
+            if GetLastError() != ERROR_ALREADY_EXISTS {
+                mutex = m.ok();
+                break;
+            }
+            if let Ok(h) = m {
+                let _ = CloseHandle(h);
+            }
+            if i + 1 < tries {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
+        let Some(mutex) = mutex else { return };
+        feat::update::startup(&args);
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         app::init_state();
@@ -112,5 +127,10 @@ fn main() {
         shell::tray(hwnd, NIM_DELETE);
         // Отписка от звука до выхода из COM.
         drop(st(|s| s.osd.audio.take()));
+        let _ = CloseHandle(mutex);
+        // Файлы обновления переставлены: окно, хоткеи, трей и мьютекс отпущены, запускаем новый exe.
+        if feat::update::PENDING.load(std::sync::atomic::Ordering::Relaxed) {
+            feat::update::hand_over();
+        }
     }
 }

@@ -430,6 +430,10 @@ unsafe fn on_tick(hwnd: HWND) {
     }
     sys_sampling_tick();
     shell::fullscreen_tick(hwnd);
+    // Первый тик после обновления: сказать старому процессу «поднялся», убрать pill.exe.old.
+    if let Some(text) = crate::feat::update::tick() {
+        osd::show(hwnd, osd::Flash::Text(text, false), 4000);
+    }
     // Перерисовываем только если что-то видимое поменялось.
     // «События» раз в секунду обновляют «5 мин» у агентов.
     let (changed, expanded, live, pulse) = st(|s| {
@@ -617,6 +621,7 @@ pub unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
         WM_APP_DROP => crate::feat::shelf::on_drop(hwnd, wparam.0),
         WM_APP_THUMB => crate::feat::shelf::on_thumbs(hwnd),
         WM_APP_SNAP => crate::feat::snap::on_ready(hwnd),
+        WM_APP_UPDATE => crate::ui::settings::on_update(hwnd),
         WM_APP_SYS => {
             let warn = sysmon::LOAD_WARN.lock().unwrap().take();
             if let Some(text) = warn {

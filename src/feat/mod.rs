@@ -19,4 +19,5 @@ pub mod shelf;
 pub mod snap;
 pub mod sysmon;
 pub mod timers;
+pub mod update;
 pub mod viz;

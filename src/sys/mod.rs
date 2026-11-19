@@ -7,6 +7,7 @@ pub mod banners;
 pub mod clipboard;
 pub mod display;
 pub mod dragdrop;
+pub mod http;
 pub mod icon;
 pub mod launch;
 pub mod loopback;

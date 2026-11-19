@@ -17,7 +17,8 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use crate::feat::notifs::{self, Notif};
 use crate::feat::sysmon::{self, Load, Sampler, WarnProbe};
-use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_NOTIF, WM_APP_RADIO, WM_APP_SNAP, WM_APP_SYS, WM_APP_THUMB};
+use crate::feat::update;
+use crate::ids::{WM_APP_BRIGHT, WM_APP_MEDIA, WM_APP_NOTIF, WM_APP_RADIO, WM_APP_SNAP, WM_APP_SYS, WM_APP_THUMB, WM_APP_UPDATE};
 use crate::sys::display::Displays;
 use crate::sys::toasts;
 
@@ -133,6 +134,11 @@ pub enum Job {
     /// Снимок экрана из буфера: записать в PNG-файл и сделать миниатюру (результат в `SNAP`,
     /// сигнал `WM_APP_SNAP`). `keep` — пути с полки: их при уборке старых снимков не трогаем.
     Snap { image: crate::sys::clipboard::Image, keep: Vec<String> },
+    /// Кнопка «Проверить»: спросить GitHub о последнем релизе (результат в `update::STATUS`, `WM_APP_UPDATE`).
+    /// Сеть блокирует воркер на время запроса, медиа-события подождут; только по нажатию.
+    UpdateCheck,
+    /// Кнопка «Обновить»: скачать и проверить `pill.exe.new` (релиз берётся из `update::STATUS`).
+    UpdateDownload,
 }
 
 impl PartialEq for crate::sys::clipboard::Image {
@@ -389,6 +395,25 @@ fn worker(rx: mpsc::Receiver<Job>) {
                                 notify(WM_APP_NOTIF);
                             }
                         }
+                    }
+                }
+                Job::UpdateCheck => {
+                    let s = update::check();
+                    *update::STATUS.lock().unwrap() = s;
+                    notify(WM_APP_UPDATE);
+                }
+                Job::UpdateDownload => {
+                    let rel = match &*update::STATUS.lock().unwrap() {
+                        update::Status::Downloading(r) => Some(r.clone()),
+                        _ => None,
+                    };
+                    if let Some(r) = rel {
+                        let s = match update::download(&r) {
+                            Ok(()) => update::Status::Ready,
+                            Err(e) => update::Status::Failed(e),
+                        };
+                        *update::STATUS.lock().unwrap() = s;
+                        notify(WM_APP_UPDATE);
                     }
                 }
                 Job::SetBrightness(pct) => {

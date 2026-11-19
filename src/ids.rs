@@ -37,6 +37,8 @@ pub const WM_APP_DROP: u32 = WM_APP + 14;
 pub const WM_APP_THUMB: u32 = WM_APP + 15;
 /// Воркер записал снимок экрана из буфера в PNG и сделал миниатюру (`winrt::SNAP`).
 pub const WM_APP_SNAP: u32 = WM_APP + 16;
+/// Воркер проверил или скачал обновление (`feat::update::STATUS`).
+pub const WM_APP_UPDATE: u32 = WM_APP + 17;
 
 /// Нет в крейте `windows` (WM_CLIPBOARDUPDATE там есть).
 pub const WM_MOUSELEAVE: u32 = 0x02A3;

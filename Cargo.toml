@@ -45,6 +45,8 @@ features = [
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
     "Win32_NetworkManagement_Rras",
+    # Проверка и скачивание обновления по кнопке (HTTPS без зависимостей)
+    "Win32_Networking_WinHttp",
     "Win32_Security",
     # Ключ локального API: случайные байты системного генератора (BCryptGenRandom)
     "Win32_Security_Cryptography",

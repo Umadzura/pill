@@ -16,6 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use super::paint::*;
 use crate::app::{scale, st, Hit};
 use crate::feat::hooks::{self, HookState};
+use crate::feat::update::{self, Status};
 use crate::feat::{notifs, settings::Settings};
 use crate::ids::WM_MOUSELEAVE;
 use crate::sys;
@@ -40,7 +41,7 @@ pub enum SetHit {
     /// Задержка сворачивания (номер в DELAYS).
     Delay(u8),
     /// Кнопка: 0 поставить хуки, 1 убрать хуки, 2 доступ к уведомлениям, 3 баннеры Windows, 4 папка данных,
-    /// 5 скопировать ключ API.
+    /// 5 скопировать ключ API, 6 проверить обновление, 7 обновить.
     Action(u8),
 }
 
@@ -125,6 +126,27 @@ pub unsafe fn show_page(page: u8) {
         });
     }
     if let Some(h) = h {
+        let _ = InvalidateRect(h, None, false);
+    }
+}
+
+/// WM_APP_UPDATE в главном окне: воркер проверил или скачал обновление.
+/// Скачано и проверено — переставить файлы и закрыться (дальше `main` запускает новый exe).
+pub unsafe fn on_update(main: HWND) {
+    if *update::STATUS.lock().unwrap() == Status::Ready {
+        match update::swap() {
+            Ok(()) => {
+                // Окно настроек закрываем сами: пока старый процесс ждёт новый, сообщения уже не крутятся.
+                if let Some(h) = st(|s| s.setwin.as_ref().map(hwnd_of)) {
+                    let _ = DestroyWindow(h);
+                }
+                let _ = DestroyWindow(main);
+                return;
+            }
+            Err(e) => *update::STATUS.lock().unwrap() = Status::Failed(e),
+        }
+    }
+    if let Some(h) = st(|s| s.setwin.as_ref().map(hwnd_of)) {
         let _ = InvalidateRect(h, None, false);
     }
 }
@@ -248,6 +270,25 @@ unsafe fn on_click(hwnd: HWND, h: SetHit) {
                 3 => {
                     sys::launch::open("ms-settings:notifications", None);
                 }
+                6 | 7 => {
+                    // 6 «Проверить», 7 «Обновить»: сеть только в воркере, результат придёт WM_APP_UPDATE.
+                    let mut s = update::STATUS.lock().unwrap();
+                    let job = match (&*s, a) {
+                        (Status::Checking | Status::Downloading(_) | Status::Ready, _) => None,
+                        (Status::Available(r), 7) => {
+                            *s = Status::Downloading(r.clone());
+                            Some(crate::bg::winrt::Job::UpdateDownload)
+                        }
+                        _ => {
+                            *s = Status::Checking;
+                            Some(crate::bg::winrt::Job::UpdateCheck)
+                        }
+                    };
+                    drop(s);
+                    if let Some(j) = job {
+                        crate::bg::winrt::send(j);
+                    }
+                }
                 _ => {
                     if let Ok(dir) = std::env::var("APPDATA") {
                         let p = std::path::Path::new(&dir).join("Pill");
@@ -275,8 +316,9 @@ unsafe fn render(hwnd: HWND, hdc: HDC) {
         return;
     }
     let dpi = GetDpiForWindow(hwnd).max(96);
-    // Реестр читаем до `st()`.
+    // Реестр и чужие мьютексы читаем до `st()`.
     let toasts = sys::banners::toasts_on();
+    let upd = update::STATUS.lock().unwrap().clone();
     super::surface::offscreen(w, h, |sf| {
         let mem = sf.dc;
         let cv = sf.canvas();
@@ -294,7 +336,7 @@ unsafe fn render(hwnd: HWND, hdc: HDC) {
                 2 => page_notifs(&mut p, &s.settings, toasts),
                 3 => page_sounds(&mut p, &s.settings),
                 4 => page_keys(&mut p),
-                _ => page_about(&mut p),
+                _ => page_about(&mut p, &upd),
             }
             let hits = std::mem::take(&mut p.hits);
             if let Some(win) = s.setwin.as_mut() {
@@ -496,10 +538,16 @@ unsafe fn page_keys(p: &mut Painter) {
     }
 }
 
-unsafe fn page_about(p: &mut Painter) {
+unsafe fn page_about(p: &mut Painter, upd: &Status) {
     let mut y = title(p, &format!("Pill {}", env!("CARGO_PKG_VERSION")));
     p.text(p.f.normal, "Лёгкая «островная» панель для Windows: музыка, буфер, агенты, уведомления.", p.r(NAV_W + 28, y, W - 28, y + 22), DIM, DT_LEFT | DT_END_ELLIPSIS);
     y += 36;
+    let (sub, btn) = update::row_text(upd);
+    let area = row(p, y, "Обновления", &sub, 110);
+    if let Some((label, id, primary)) = btn {
+        button(p, area.right, area, label, SetHit::Action(id), primary);
+    }
+    y += ROW;
     let data = std::env::var("APPDATA").map(|a| format!("{}\\Pill", a)).unwrap_or_default();
     let area = row(p, y, "Папка с данными", &data, 100);
     button(p, area.right, area, "Открыть", SetHit::Action(4), false);
