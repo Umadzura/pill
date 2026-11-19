@@ -881,7 +881,7 @@ taskkill /IM pill.exe /F
 ## Заметка о проверке
 - Клики в окнах Pill через `PostMessage` проверять можно только из процесса, учитывающего DPI (`SetThreadDpiAwarenessContext` PER_MONITOR_AWARE_V2): иначе Windows пересчитывает координаты мыши в отправленных сообщениях и клик мажет (на 200% половина «кликов» не попадала). Записано в «Заметки» CLAUDE.md.
 
-# Обновление из окна настроек (этап 19, 2026-11-20, не закоммичено)
+# Обновление из окна настроек (этап 19, 2026-11-20, коммит 063c18e)
 
 ## Что добавлено
 - `src/sys/http.rs` (новый): `get(url, accept, max)` через WinHTTP (фича `Win32_Networking_WinHttp` в `Cargo.toml`), только HTTPS; `http://` допустим лишь для 127.0.0.1 (`parse_url`); тайм-ауты 15 с на шаг, лимит размера ответа, перенаправления WinHTTP делает сам (кроме HTTPS -> HTTP), User-Agent `Pill/<версия>`, системный прокси (`WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`). `sha256()` через `BCryptHash` и `BCRYPT_SHA256_ALG_HANDLE`. Тесты `urls`, `sha`.
