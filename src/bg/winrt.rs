@@ -379,6 +379,8 @@ fn worker(rx: mpsc::Receiver<Job>) {
                             l.remove(id);
                         }
                         if let Some(list) = l.read() {
+                            // Программа написала впервые: выключить ей баннеры Windows, если так настроено.
+                            crate::feat::banners::seen(list.iter().map(|t| t.aumid.as_str()));
                             let cur = list.into_iter().map(Notif::from_toast).collect();
                             let mut inbox = notifs::INBOX.lock().unwrap();
                             let wake = inbox.update(cur) || inbox.fresh.is_some();

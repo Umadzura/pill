@@ -3,6 +3,7 @@
 
 pub mod audio;
 pub mod autostart;
+pub mod banners;
 pub mod clipboard;
 pub mod display;
 pub mod dragdrop;

@@ -67,6 +67,8 @@ features = [
     "Win32_System_Threading",
     # Яркость встроенного экрана ноутбука (ROOT\WMI, только из фонового потока)
     "Win32_System_Wmi",
+    # Смена активного окна (SetWinEventHook): чёлка снова встаёт поверх
+    "Win32_UI_Accessibility",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

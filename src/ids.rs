@@ -59,6 +59,8 @@ pub const TIMER_SHOT: usize = 6;
 pub const TIMER_ANIM: usize = 7;
 /// Разовый: спрятать карточку из чёлки (уведомление, «агент закончил»).
 pub const TIMER_PEEK: usize = 8;
+/// 300 мс, разовый: после смены активного окна ещё раз встать поверх (`shell::raise`).
+pub const TIMER_RAISE: usize = 9;
 
 pub const COLLAPSE_DELAY_MS: u32 = 350;
 

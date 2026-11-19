@@ -4,6 +4,7 @@
 
 pub mod agents;
 pub mod api;
+pub mod banners;
 pub mod clip;
 pub mod cmd;
 pub mod hooks;

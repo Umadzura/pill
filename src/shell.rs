@@ -403,6 +403,35 @@ pub unsafe fn on_display_change(hwnd: HWND) {
     layout(hwnd);
 }
 
+// ---------- поверх всех окон ----------
+
+/// Окно пилюли для колбэка WinEvent: своего контекста у колбэка нет.
+static MAIN: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Другие окна «поверх всех» (диспетчер задач, закреплённые PowerToys, картинка в картинке)
+/// при активации встают выше чёлки, и она оказывается под ними. Поэтому на каждую смену
+/// активного окна встаём наверх снова. Событием системы, без опроса.
+pub unsafe fn watch_foreground(hwnd: HWND) {
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
+    MAIN.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
+    let _ = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None, Some(on_foreground), 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+}
+
+unsafe extern "system" fn on_foreground(_: windows::Win32::UI::Accessibility::HWINEVENTHOOK, _: u32, _: HWND, _: i32, _: i32, _: u32, _: u32) {
+    let hwnd = HWND(MAIN.load(std::sync::atomic::Ordering::Relaxed) as *mut _);
+    raise(hwnd);
+    // Некоторые окна встают «поверх всех» уже после активации: проверим ещё раз чуть позже.
+    SetTimer(hwnd, TIMER_RAISE, 300, None);
+}
+
+/// Встать поверх всех окон, ничего не активируя. Спрятанную (полноэкранный режим, Ctrl+Alt+H) не показывает.
+/// Без `st()`: колбэк может прийти посреди модального цикла.
+pub unsafe fn raise(hwnd: HWND) {
+    if !hwnd.0.is_null() && IsWindowVisible(hwnd).as_bool() {
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    }
+}
+
 // ---------- полноэкранный режим ----------
 
 /// Регистрация «панели приложения» без резерва места: так Explorer шлёт ABN_FULLSCREENAPP,

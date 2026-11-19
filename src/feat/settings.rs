@@ -20,6 +20,8 @@ pub struct Settings {
     pub skip_focused: bool,
     /// История буфера только в памяти: `clipboard.txt` не пишется, после выхода записи пропадают.
     pub clip_memory: bool,
+    /// Прятать баннеры Windows у программ: сообщения только в чёлке (`feat::banners`).
+    pub hide_banners: bool,
     /// Ключ локального API (hex, 16 случайных байт): создаётся один раз при первом запуске,
     /// вписывается в команду хуков Claude Code. Пустой — ещё не создан (или файл не записать).
     pub api_key: String,
@@ -35,6 +37,7 @@ impl Default for Settings {
             quiet: None,
             skip_focused: true,
             clip_memory: false,
+            hide_banners: false,
             api_key: String::new(),
             extra: Vec::new(),
         }
@@ -87,6 +90,10 @@ impl Settings {
                             s.clip_memory = flag(v).unwrap_or(s.clip_memory);
                             true
                         }
+                        "hide_banners" => {
+                            s.hide_banners = flag(v).unwrap_or(s.hide_banners);
+                            true
+                        }
                         "api_key" => {
                             // Кривой ключ отбрасываем: при старте создастся новый.
                             if valid_key(v) {
@@ -114,6 +121,7 @@ impl Settings {
         }
         out.push_str(&format!("skip_focused={}\n", self.skip_focused as u8));
         out.push_str(&format!("clip_memory={}\n", self.clip_memory as u8));
+        out.push_str(&format!("hide_banners={}\n", self.hide_banners as u8));
         if !self.api_key.is_empty() {
             out.push_str(&format!("api_key={}\n", self.api_key));
         }
@@ -224,6 +232,15 @@ mod tests {
         let bad = Settings::parse("clip_memory=maybe\n");
         assert!(!bad.clip_memory);
         assert_eq!(bad.serialize(), Settings::default().serialize());
+    }
+
+    #[test]
+    fn hide_banners_flag() {
+        assert!(!Settings::default().hide_banners);
+        let s = Settings::parse("hide_banners=1\n");
+        assert!(s.hide_banners && s.serialize().contains("hide_banners=1\n"));
+        assert_eq!(Settings::parse(&s.serialize()), s);
+        assert_eq!(Settings::parse("hide_banners=maybe\n").serialize(), Settings::default().serialize());
     }
 
     #[test]

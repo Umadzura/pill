@@ -35,7 +35,7 @@ const BG_WIN: COLORREF = rgb(11, 11, 12);
 pub enum SetHit {
     Page(u8),
     /// Переключатель: 0 «просто точка», 1 автозапуск, 2 «не мешать в окне агента», 3 тихие часы, 4 звуки,
-    /// 5 история буфера только в памяти.
+    /// 5 история буфера только в памяти, 6 прятать баннеры Windows.
     Toggle(u8),
     /// Задержка сворачивания (номер в DELAYS).
     Delay(u8),
@@ -213,6 +213,11 @@ unsafe fn on_click(hwnd: HWND, h: SetHit) {
                 None => crate::feat::clip::remove_file(),
             }
         }
+        SetHit::Toggle(6) => {
+            // Реестр и banners.txt здесь, вне `st()`.
+            cfg.hide_banners = !cfg.hide_banners;
+            crate::feat::banners::set(cfg.hide_banners);
+        }
         SetHit::Toggle(_) => cfg.sound = !cfg.sound,
         SetHit::Delay(i) => cfg.collapse_ms = DELAYS[(i as usize).min(DELAYS.len() - 1)].0,
         SetHit::Action(a) => {
@@ -270,6 +275,8 @@ unsafe fn render(hwnd: HWND, hdc: HDC) {
         return;
     }
     let dpi = GetDpiForWindow(hwnd).max(96);
+    // Реестр читаем до `st()`.
+    let toasts = sys::banners::toasts_on();
     super::surface::offscreen(w, h, |sf| {
         let mem = sf.dc;
         let cv = sf.canvas();
@@ -284,7 +291,7 @@ unsafe fn render(hwnd: HWND, hdc: HDC) {
             match win.page {
                 0 => page_panel(&mut p, &s.settings),
                 1 => page_agents(&mut p, &s.settings, &win.hooks, win.copied),
-                2 => page_notifs(&mut p, &s.settings),
+                2 => page_notifs(&mut p, &s.settings, toasts),
                 3 => page_sounds(&mut p, &s.settings),
                 4 => page_keys(&mut p),
                 _ => page_about(&mut p),
@@ -446,14 +453,21 @@ unsafe fn page_agents(p: &mut Painter, cfg: &Settings, hooks_state: &Result<Hook
     row(p, y, "Ответ на просьбу ждёт 30 секунд", "потом вопрос уходит в окно агента, как будто Pill нет", 0);
 }
 
-unsafe fn page_notifs(p: &mut Painter, cfg: &Settings) {
+unsafe fn page_notifs(p: &mut Painter, cfg: &Settings, toasts_on: bool) {
     let mut y = title(p, "Уведомления");
     let off = notifs::OFF.load(Ordering::Relaxed);
     let area = row(p, y, "Доступ к уведомлениям Windows", if off { "нет доступа — сообщения не появятся в пилюле" } else { "есть: Pill читает центр уведомлений" }, 170);
     button(p, area.right, area, "Открыть параметры", SetHit::Action(2), off);
     y += ROW;
-    let area = row(p, y, "Баннеры Windows", "выключи их, чтобы сообщения не дублировались", 200);
-    button(p, area.right, area, "Параметры уведомлений", SetHit::Action(3), false);
+    if !toasts_on {
+        // Главный переключатель выключен: центр уведомлений пуст, чёлке нечего показать.
+        let area = row(p, y, "Уведомления Windows выключены целиком", "Pill их не видит: включи верхний переключатель «Уведомления»", 170);
+        button(p, area.right, area, "Включить", SetHit::Action(3), true);
+        y += ROW;
+    }
+    let area = row(p, y, "Прятать баннеры Windows", "сообщения останутся только в чёлке", 200);
+    toggle(p, area, cfg.hide_banners, 6);
+    button(p, area.right - p.s(38 + 16), area, "Параметры", SetHit::Action(3), false);
     y += ROW;
     let area = row(p, y, "Тихие часы 23:00–8:00", "ни звуков, ни карточек; счётчик пропущенных растёт как обычно", 50);
     toggle(p, area, cfg.quiet.is_some(), 3);

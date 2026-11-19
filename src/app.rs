@@ -154,6 +154,8 @@ pub unsafe fn init_state() {
         settings.save();
     }
     api::set_key(&settings.api_key);
+    // Баннеры Windows: свой список из banners.txt и программы, что появились, пока Pill не работал.
+    crate::feat::banners::init(settings.hide_banners);
     let s = State {
         shell: shell::Shell::new(),
         input: input::Input::default(),
@@ -524,6 +526,10 @@ unsafe fn on_timer(hwnd: HWND, id: usize) {
         TIMER_COLLAPSE => shell::on_collapse_timer(hwnd),
         TIMER_ANIM => shell::on_anim_timer(hwnd),
         TIMER_PEEK => peek::hide(hwnd),
+        TIMER_RAISE => {
+            let _ = KillTimer(hwnd, TIMER_RAISE);
+            shell::raise(hwnd);
+        }
         TIMER_PASTE => input::on_paste_timer(hwnd),
         TIMER_SHOT => {
             let _ = KillTimer(hwnd, TIMER_SHOT);
